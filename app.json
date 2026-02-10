@@ -3,8 +3,9 @@
     "name": "bttrtogether",
     "slug": "bttrtogether",
     "version": "1.0.0",
+    "owner": "digaifounder",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/fsf.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
@@ -13,17 +14,27 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mousscales.bttrtogether",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/fsf.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.mousscales.bttrtogether"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c30cd483-b26d-459c-b7fd-acf9aad7744d"
+      }
     }
   }
 }
