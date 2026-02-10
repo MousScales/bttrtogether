@@ -1,20 +1,39 @@
+import { NavigationContainer } from '@react-navigation/native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+
+import GoalsScreen from './screens/GoalsScreen';
+import ProfileScreen from './screens/ProfileScreen';
+import BetsScreen from './screens/BetsScreen';
+
+const Tab = createBottomTabNavigator();
 
 export default function App() {
   return (
-    <View style={styles.container}>
-      <Text>Open up App.js to start working on your app!</Text>
+    <NavigationContainer>
       <StatusBar style="auto" />
-    </View>
+      <Tab.Navigator
+        screenOptions={{
+          tabBarActiveTintColor: '#007AFF',
+          tabBarInactiveTintColor: 'gray',
+        }}
+      >
+        <Tab.Screen 
+          name="Goals" 
+          component={GoalsScreen}
+          options={{
+            headerTitle: 'List of Goals',
+          }}
+        />
+        <Tab.Screen 
+          name="Bets" 
+          component={BetsScreen}
+        />
+        <Tab.Screen 
+          name="Profile" 
+          component={ProfileScreen}
+        />
+      </Tab.Navigator>
+    </NavigationContainer>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
