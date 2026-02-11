@@ -27,12 +27,17 @@ export default function ProfileScreen({ navigation }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [addingFriend, setAddingFriend] = useState(null);
-
+  const [currentUser, setCurrentUser] = useState(null);
+  const [streak, setStreak] = useState(0);
+  const [dateJoined, setDateJoined] = useState(null);
+  
   // Load profile and goals data
   const loadProfileData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
+      
+      setCurrentUser(user);
 
       // Load profile
       const { data: profileData, error: profileError } = await supabase
@@ -73,10 +78,96 @@ export default function ProfileScreen({ navigation }) {
         setGoals(goalsData || []);
       }
 
+      // Set date joined from user creation date
+      if (user.created_at) {
+        const joinedDate = new Date(user.created_at);
+        setDateJoined(joinedDate);
+      }
+
+      // Calculate streak
+      await calculateStreak(user.id);
+
       setLoading(false);
     } catch (error) {
       console.error('Error loading profile data:', error);
       setLoading(false);
+    }
+  };
+
+  // Calculate current streak based on completion data
+  const calculateStreak = async (userId) => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Get all goal IDs for this user
+      const { data: userGoals } = await supabase
+        .from('goals')
+        .select('id')
+        .eq('user_id', userId);
+      
+      if (!userGoals || userGoals.length === 0) {
+        setStreak(0);
+        return;
+      }
+      
+      const goalIds = userGoals.map(g => g.id);
+      
+      // Get all completions for the last 30 days (to find streak)
+      const startDate = new Date(today);
+      startDate.setDate(startDate.getDate() - 30);
+      
+      const { data: completions } = await supabase
+        .from('goal_completions')
+        .select('completed_at, goal_id')
+        .in('goal_id', goalIds)
+        .eq('user_id', userId)
+        .gte('completed_at', startDate.toISOString().split('T')[0])
+        .order('completed_at', { ascending: false });
+      
+      if (!completions || completions.length === 0) {
+        setStreak(0);
+        return;
+      }
+      
+      // Group completions by date
+      const completionsByDate = {};
+      completions.forEach(c => {
+        const dateStr = c.completed_at.includes('T') 
+          ? c.completed_at.split('T')[0] 
+          : c.completed_at;
+        if (!completionsByDate[dateStr]) {
+          completionsByDate[dateStr] = new Set();
+        }
+        completionsByDate[dateStr].add(c.goal_id);
+      });
+      
+      // Check which dates have ALL goals completed
+      const datesWithAllGoalsCompleted = Object.keys(completionsByDate).filter(dateStr => {
+        const completedGoalIds = completionsByDate[dateStr];
+        return completedGoalIds.size === goalIds.length;
+      });
+      
+      // Calculate streak going backwards from today
+      let currentStreak = 0;
+      let checkDate = new Date(today);
+      
+      while (true) {
+        const dateStr = checkDate.toISOString().split('T')[0];
+        const hasAllCompleted = datesWithAllGoalsCompleted.includes(dateStr);
+        
+        if (hasAllCompleted) {
+          currentStreak++;
+          checkDate.setDate(checkDate.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+      
+      setStreak(currentStreak);
+    } catch (error) {
+      console.error('Error calculating streak:', error);
+      setStreak(0);
     }
   };
 
@@ -122,8 +213,8 @@ export default function ProfileScreen({ navigation }) {
       Alert.alert('Error', 'Failed to search users');
     } finally {
       setSearching(false);
-    }
-  };
+      }
+    };
 
   // Handle search input change with debounce
   useEffect(() => {
@@ -170,26 +261,24 @@ export default function ProfileScreen({ navigation }) {
     }
   };
 
-  const goalCategories = useMemo(() => {
-    return goalLists.map(list => ({
-      id: list.id,
-      name: list.name,
-      color: list.type === 'personal' ? '#4CAF50' : '#2196F3',
-      icon: list.type === 'personal' ? 'person' : 'people',
-      members: [],
-      countdown: null,
-      type: list.type,
-    }));
-  }, [goalLists]);
-
   // Generate completion history helper
-  const generateHistory = (goalCreatedAt) => {
+  const generateHistory = (goalCreatedAt, notStarted = false) => {
+    const totalDays = 28;
+    
+    // If goal hasn't started, all boxes are future (null) except index 0 which is today
+    if (notStarted) {
+      return Array.from({ length: totalDays }, (_, index) => {
+        if (index === 0) return null; // Today (index 0)
+        return null; // All future days
+      });
+    }
+    
+    // Normal calculation for started goals
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const createdDate = new Date(goalCreatedAt);
     createdDate.setHours(0, 0, 0, 0);
     const daysSinceCreation = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
-    const totalDays = 28;
     
     return Array.from({ length: totalDays }, (_, index) => {
       if (index < daysSinceCreation) return false;
@@ -198,35 +287,223 @@ export default function ProfileScreen({ navigation }) {
     });
   };
 
-  const getCurrentDayIndex = (goalCreatedAt) => {
+  const getCurrentDayIndex = (goalCreatedAt, goalListId) => {
+    // If goal list hasn't started, current day is always index 0
+    if (goalListId && goalListStatuses && goalListStatuses[goalListId] === false) {
+      return 0;
+    }
+    
+    if (!goalCreatedAt) return 0;
+    
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const createdDate = new Date(goalCreatedAt);
+    if (isNaN(createdDate.getTime())) return 0;
     createdDate.setHours(0, 0, 0, 0);
     return Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
   };
+
+  const goalCategories = useMemo(() => {
+    if (!goalLists || goalLists.length === 0) return [];
+    
+    return goalLists.map(list => {
+      if (!list || !list.id) return null;
+      
+      const isGroupGoal = list.type === 'group';
+      const hasStarted = goalListStatuses && goalListStatuses[list.id] !== false; // Default to true if not checked yet
+      
+      // Generate completion history for the goal list
+      const history = generateHistory(list.created_at || new Date().toISOString(), !hasStarted);
+      const currentDayIndex = getCurrentDayIndex(list.created_at || new Date().toISOString(), list.id);
+      
+      // Get completion data for this goal list
+      const completionData = (goalListCompletionData && goalListCompletionData[list.id]) || {};
+      
+      // Populate history with completion data
+      const listGoals = (goals || []).filter(g => g && g.goal_list_id === list.id);
+      if (listGoals.length > 0 && completionData && typeof completionData === 'object') {
+        const createdDate = new Date(list.created_at || new Date().toISOString());
+        if (!isNaN(createdDate.getTime())) {
+          createdDate.setHours(0, 0, 0, 0);
+          
+          Object.keys(completionData).forEach(dateStr => {
+            if (completionData[dateStr]) {
+              const completionDate = new Date(dateStr);
+              if (!isNaN(completionDate.getTime())) {
+                completionDate.setHours(0, 0, 0, 0);
+                
+                const dayIndex = Math.floor((completionDate - createdDate) / (1000 * 60 * 60 * 24));
+                if (dayIndex >= 0 && dayIndex < history.length && dayIndex < currentDayIndex) {
+                  history[dayIndex] = true;
+                }
+              }
+            }
+          });
+          
+          // Check if all goals are completed today
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const todayStr = today.toISOString().split('T')[0];
+          const allCompletedToday = completionData[todayStr] === true;
+          if (currentDayIndex >= 0 && currentDayIndex < history.length) {
+            history[currentDayIndex] = allCompletedToday;
+          }
+        }
+      }
+      
+      return {
+        id: list.id,
+        name: list.name || 'Untitled',
+        color: list.type === 'personal' ? '#4CAF50' : '#2196F3',
+        icon: list.type === 'personal' ? 'person' : 'people',
+        members: [],
+        countdown: null,
+        type: list.type,
+        completionHistory: history,
+        currentDayIndex: currentDayIndex,
+        isGroupGoal: isGroupGoal,
+        hasStarted: hasStarted,
+        goalList: list,
+      };
+    }).filter(Boolean); // Remove any null entries
+  }, [goalLists, goalListStatuses, goalListCompletionData, goals]);
 
   const getRandomColor = () => {
     const colors = ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336'];
     return colors[Math.floor(Math.random() * colors.length)];
   };
 
-  const myGoals = useMemo(() => {
-    return goals.map(goal => {
-      const history = generateHistory(goal.created_at);
-      const currentDayIndex = getCurrentDayIndex(goal.created_at);
-      history[currentDayIndex] = goal.completed;
+  const [goalListStatuses, setGoalListStatuses] = useState({}); // Track which goal lists have started
+  const [goalListParticipants, setGoalListParticipants] = useState({}); // Track participants for each goal list
+  const [goalListCompletionData, setGoalListCompletionData] = useState({}); // Track completion data for each goal list
+
+  // Check if group goal lists have started (all participants paid/accepted)
+  useEffect(() => {
+    const checkGoalListStatuses = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const statuses = {};
+      const participantsData = {};
       
-      return {
-        id: goal.id,
-        title: goal.title,
-        checked: goal.completed,
-        completionHistory: history,
-        color: goal.color || getRandomColor(),
-        currentDayIndex: currentDayIndex,
-      };
-    });
-  }, [goals]);
+      // Check each group goal list
+      for (const goalList of goalLists) {
+        if (goalList.type === 'group') {
+          // Load all participants
+          const { data: participantsDataRaw, error: participantsError } = await supabase
+            .from('group_goal_participants')
+            .select('*')
+            .eq('goal_list_id', goalList.id);
+          
+          if (participantsError) {
+            console.error('Error loading participants:', participantsError);
+            participantsData[goalList.id] = [];
+            statuses[goalList.id] = false;
+          } else {
+            // Always include the creator (owner) even if not in participants table
+            const creatorId = goalList.user_id;
+            const creatorInParticipants = participantsDataRaw?.find(p => p.user_id === creatorId);
+            
+            let allParticipantsList = [...(participantsDataRaw || [])];
+            
+            // If creator is not in participants, add them
+            if (!creatorInParticipants) {
+              // Load creator's profile
+              const { data: creatorProfile } = await supabase
+                .from('profiles')
+                .select('id, name, username, avatar_url')
+                .eq('id', creatorId)
+                .single();
+              
+              allParticipantsList.unshift({
+                id: `creator-${creatorId}`,
+                user_id: creatorId,
+                goal_list_id: goalList.id,
+                payment_status: 'pending',
+                profile: creatorProfile || null,
+              });
+            }
+            
+            if (allParticipantsList.length > 0) {
+              // Load profiles for each participant (if not already loaded)
+              const participantsWithProfiles = await Promise.all(
+                allParticipantsList.map(async (participant) => {
+                  // If profile already exists (for creator we just added), use it
+                  if (participant.profile) {
+                    return participant;
+                  }
+                  
+                  const { data: profile } = await supabase
+                    .from('profiles')
+                    .select('id, name, username, avatar_url')
+                    .eq('id', participant.user_id)
+                    .single();
+                  
+                  return {
+                    ...participant,
+                    profile: profile || null,
+                  };
+                })
+              );
+              
+              participantsData[goalList.id] = participantsWithProfiles;
+              const allStarted = participantsWithProfiles.every(p => p.payment_status === 'paid');
+              statuses[goalList.id] = allStarted;
+            } else {
+              // No participants yet, so not started
+              participantsData[goalList.id] = [];
+              statuses[goalList.id] = false;
+            }
+          }
+        } else {
+          // Personal goals are always "started"
+          statuses[goalList.id] = true;
+          participantsData[goalList.id] = [];
+        }
+      }
+      
+      setGoalListStatuses(statuses);
+      setGoalListParticipants(participantsData);
+    };
+
+    if (goalLists.length > 0) {
+      checkGoalListStatuses();
+    }
+  }, [goalLists]);
+
+  const myGoals = useMemo(() => {
+    return goals
+      .map(goal => {
+        // Find the goal list for this goal
+        const goalList = goalLists.find(list => list.id === goal.goal_list_id);
+        const isGroupGoal = goalList?.type === 'group';
+        const hasStarted = (goalListStatuses && goalListStatuses[goal.goal_list_id]) !== false; // Default to true if not checked yet
+        
+        // For goals that haven't started, current day is always index 0
+        const currentDayIndex = getCurrentDayIndex(goal.created_at, goal.goal_list_id);
+        
+        // Generate history - if not started, all boxes should be null/future except index 0
+        const history = generateHistory(goal.created_at, !hasStarted);
+        history[currentDayIndex] = goal.completed;
+        
+        return {
+          id: goal.id,
+          title: goal.title,
+          checked: goal.completed,
+          completionHistory: history,
+          color: goal.color || getRandomColor(),
+          currentDayIndex: currentDayIndex,
+          goal_list_id: goal.goal_list_id,
+          isGroupGoal: isGroupGoal,
+          hasStarted: hasStarted,
+          goalList: goalList, // Include the full goal list object
+        };
+      })
+      .filter(goal => {
+        // Filter out goals from goal lists that haven't started
+        return goal.hasStarted !== false;
+      });
+  }, [goals, goalLists, goalListStatuses]);
 
   const friends = useMemo(() => [], []); // Empty for now
 
@@ -274,11 +551,11 @@ export default function ProfileScreen({ navigation }) {
           {/* Profile Avatar */}
           <View style={styles.avatarContainer}>
             {profile?.avatar_url ? (
-              <Image
+            <Image
                 source={{ uri: profile.avatar_url }}
-                style={styles.avatar}
-                resizeMode="cover"
-              />
+              style={styles.avatar}
+              resizeMode="cover"
+            />
             ) : (
               <View style={styles.avatarPlaceholder}>
                 <Ionicons name="person" size={40} color="#666666" />
@@ -292,59 +569,223 @@ export default function ProfileScreen({ navigation }) {
 
           {/* Stats Badges */}
           <View style={styles.badgesRow}>
-            <View style={styles.badge}>
-              <Ionicons name="calendar-outline" size={16} color="#ffffff" />
-              <Text style={styles.badgeText}>Feb 10</Text>
-            </View>
+            {dateJoined && (
+              <View style={styles.badge}>
+                <Ionicons name="calendar-outline" size={16} color="#ffffff" />
+                <Text style={styles.badgeText}>
+                  {dateJoined.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </Text>
+              </View>
+            )}
             <View style={styles.badge}>
               <Ionicons name="flame" size={16} color="#FF6B35" />
-              <Text style={styles.badgeText}>5 Day Streak</Text>
-            </View>
-            <View style={styles.badge}>
-              <Ionicons name="trophy-outline" size={16} color="#FFD700" />
-              <Text style={styles.badgeText}>Level 3</Text>
+              <Text style={styles.badgeText}>
+                {streak} Day{streak !== 1 ? 's' : ''} Streak
+              </Text>
             </View>
           </View>
         </View>
 
-        {/* Goal Categories Section */}
+        {/* Goal Lists Section */}
         {goalCategories.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Goal Lists</Text>
-            <View style={styles.groupsList}>
-              {goalCategories.map((category) => (
-                <TouchableOpacity key={category.id} style={styles.groupCard}>
-                  <View style={styles.groupLeft}>
-                    <View style={[styles.groupIcon, { backgroundColor: category.color }]}>
-                      <Ionicons name={category.icon} size={24} color="#ffffff" />
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Goal Lists</Text>
+          <View style={styles.goalsList}>
+            {goalCategories.map((category) => (
+              <View key={category.id} style={styles.goalCard}>
+                {/* Overlay for group goal lists that haven't started */}
+                {category.isGroupGoal && !category.hasStarted && (() => {
+                  const participants = (goalListParticipants && goalListParticipants[category.id]) || [];
+                  const isOwner = category.goalList && category.goalList.user_id === currentUser?.id;
+                  const hasMultipleParticipants = participants.length > 1;
+                  const allPaidAccepted = participants.length > 0 && participants.every(p => p.payment_status === 'paid');
+                  const showStartButton = isOwner && hasMultipleParticipants && allPaidAccepted;
+                  const consequenceType = category.goalList?.consequence_type || 'money';
+                  
+                  // Determine the reason why it hasn't started
+                  let reasonText = '';
+                  if (participants.length <= 1) {
+                    reasonText = 'Not enough participants';
+                  } else if (consequenceType === 'money' && !allPaidAccepted) {
+                    reasonText = 'Not everyone has paid';
+                  } else if (consequenceType === 'punishment' && !allPaidAccepted) {
+                    reasonText = 'Not everyone has accepted';
+                  } else {
+                    reasonText = 'Waiting to start';
+                  }
+                  
+                  return (
+                    <View style={styles.goalOverlay}>
+                      <View style={styles.goalOverlayContent}>
+                        <Text style={styles.goalOverlayText}>{reasonText}</Text>
+                        
+                        {/* Start Button - Only show if owner, multiple participants, and all paid/accepted */}
+                        {(() => {
+                          return showStartButton ? (
+                            <TouchableOpacity 
+                              style={styles.goalOverlayStartButton}
+                              onPress={async () => {
+                                // Mark goal list as started (update all_paid flag)
+                                const { error } = await supabase
+                                  .from('goal_lists')
+                                  .update({ all_paid: true })
+                                  .eq('id', category.id)
+                                  .eq('user_id', currentUser.id);
+                                
+                                if (!error) {
+                                  // Reload data to update status
+                                  loadProfileData();
+                                }
+                              }}
+                            >
+                              <Text style={styles.goalOverlayStartButtonText}>Start</Text>
+                            </TouchableOpacity>
+                          ) : null;
+                        })()}
+                      </View>
                     </View>
-                    <View style={styles.groupInfo}>
-                      <Text style={styles.groupTitle}>{category.name}</Text>
-                    </View>
-                  </View>
-                  {category.countdown && (
-                    <View style={styles.countdownBadge}>
-                      <Text style={styles.countdownText}>{category.countdown}</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
+                  );
+                })()}
+                
+                <View style={styles.goalPillWrapper}>
+                  <Text style={styles.goalTitleText}>{category.name}</Text>
+                </View>
+                
+                {/* Completion History Grid - Carousel with 3 rows */}
+                {category.completionHistory && (() => {
+                  const totalBoxes = category.completionHistory.length;
+                  const numRows = 3; // Always 3 rows
+                  const boxesPerColumn = numRows; // 3 boxes per column
+                  const numColumns = Math.ceil(totalBoxes / boxesPerColumn);
+                  
+                  // Organize into columns (each column has 3 boxes stacked)
+                  const columns = [];
+                  for (let col = 0; col < numColumns; col++) {
+                    const columnBoxes = [];
+                    for (let row = 0; row < numRows; row++) {
+                      const originalIndex = col * numRows + row;
+                      if (originalIndex < totalBoxes) {
+                        columnBoxes.push({
+                          status: category.completionHistory[originalIndex],
+                          originalIndex: originalIndex
+                        });
+                      }
+                    }
+                    if (columnBoxes.length > 0) {
+                      columns.push(columnBoxes);
+                    }
+                  }
+                  
+                  return (
+                    <ScrollView 
+                      horizontal 
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.historyCarouselContainer}
+                      style={styles.historyCarousel}
+                    >
+                      {columns.map((columnBoxes, colIndex) => (
+                        <View key={colIndex} style={styles.historyColumn}>
+                          {columnBoxes.map((box) => {
+                            const isToday = box.originalIndex === category.currentDayIndex;
+                            const isFuture = box.originalIndex > category.currentDayIndex;
+                            const isCompleted = box.status === true;
+                  
+                            return (
+                              <View 
+                                key={box.originalIndex} 
+                                style={[
+                                  styles.historySquare,
+                                  isFuture 
+                                    ? styles.historySquareFuture
+                                    : isCompleted 
+                                      ? { backgroundColor: category.color || '#4CAF50' }
+                                      : styles.historySquareIncomplete,
+                                  isToday && styles.historySquareToday
+                                ]} 
+                              />
+                            );
+                          })}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  );
+                })()}
+              </View>
+            ))}
           </View>
+        </View>
         )}
 
         {/* My Goals Section */}
         {myGoals.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>My Goals</Text>
-            
-            <View style={styles.goalsList}>
-              {myGoals.map((goal) => (
-                <View key={goal.id} style={styles.goalCard}>
-                  <View style={styles.goalPillWrapper}>
-                    <Text style={styles.goalTitleText}>{goal.title}</Text>
-                  </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>My Goals</Text>
+          
+          <View style={styles.goalsList}>
+            {myGoals.map((goal) => (
+              <View key={goal.id} style={styles.goalCard}>
+                {/* Overlay for group goals that haven't started */}
+                {goal.isGroupGoal && !goal.hasStarted && (() => {
+                  const participants = (goalListParticipants && goalListParticipants[goal.goal_list_id]) || [];
+                  const isOwner = goal.goalList && goal.goalList.user_id === currentUser?.id;
+                  const hasMultipleParticipants = participants.length > 1;
+                  const allPaidAccepted = participants.length > 0 && participants.every(p => p.payment_status === 'paid');
+                  const showStartButton = isOwner && hasMultipleParticipants && allPaidAccepted;
+                  const consequenceType = goal.goalList?.consequence_type || 'money';
                   
+                  return (
+                    <View style={styles.goalOverlay}>
+                      <View style={styles.goalOverlayContent}>
+                        {/* Determine the reason why it hasn't started */}
+                        {(() => {
+                          let reasonText = '';
+                          if (participants.length <= 1) {
+                            reasonText = 'Not enough participants';
+                          } else if (consequenceType === 'money' && !allPaidAccepted) {
+                            reasonText = 'Not everyone has paid';
+                          } else if (consequenceType === 'punishment' && !allPaidAccepted) {
+                            reasonText = 'Not everyone has accepted';
+                          } else {
+                            reasonText = 'Waiting to start';
+                          }
+                          
+                          return (
+                            <>
+                              <Text style={styles.goalOverlayText}>{reasonText}</Text>
+                              
+                              {/* Start Button - Only show if owner, multiple participants, and all paid/accepted */}
+                              {showStartButton && (
+                                <TouchableOpacity 
+                                  style={styles.goalOverlayStartButton}
+                                  onPress={async () => {
+                                    // Mark goal list as started (update all_paid flag)
+                                    const { error } = await supabase
+                                      .from('goal_lists')
+                                      .update({ all_paid: true })
+                                      .eq('id', goal.goal_list_id)
+                                      .eq('user_id', currentUser.id);
+                                    
+                                    if (!error) {
+                                      // Reload data to update status
+                                      loadProfileData();
+                                    }
+                                  }}
+                                >
+                                  <Text style={styles.goalOverlayStartButtonText}>Start</Text>
+                                </TouchableOpacity>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </View>
+                    </View>
+                  );
+                })()}
+                
+                <View style={styles.goalPillWrapper}>
+                  <Text style={styles.goalTitleText}>{goal.title}</Text>
+                </View>
+                
                   {/* Completion History Grid - Carousel with 3 rows */}
                   {goal.completionHistory && (() => {
                     const totalBoxes = goal.completionHistory.length;
@@ -383,54 +824,54 @@ export default function ProfileScreen({ navigation }) {
                               const isToday = box.originalIndex === goal.currentDayIndex;
                               const isFuture = box.originalIndex > goal.currentDayIndex;
                               const isCompleted = box.status === true;
-                              
-                              return (
-                                <View 
+                    
+                    return (
+                      <View 
                                   key={box.originalIndex} 
-                                  style={[
-                                    styles.historySquare,
-                                    isFuture 
-                                      ? styles.historySquareFuture
-                                      : isCompleted 
+                        style={[
+                          styles.historySquare,
+                          isFuture 
+                            ? styles.historySquareFuture
+                            : isCompleted 
                                         ? { backgroundColor: goal.color || '#4CAF50' }
-                                        : styles.historySquareIncomplete,
-                                    isToday && styles.historySquareToday
-                                  ]} 
-                                />
-                              );
-                            })}
-                          </View>
+                              : styles.historySquareIncomplete,
+                          isToday && styles.historySquareToday
+                        ]} 
+                      />
+                    );
+                  })}
+                </View>
                         ))}
                       </ScrollView>
                     );
                   })()}
-                </View>
-              ))}
-            </View>
+              </View>
+            ))}
           </View>
+        </View>
         )}
 
         {/* Friends Section */}
         {friends.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitleLarge}>Friends</Text>
-            
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.friendsScroll}
-            >
-              {friends.map((friend) => (
-                <TouchableOpacity key={friend.id} style={styles.friendCard}>
-                  <View style={styles.friendCardAvatar}>
-                    <Text style={styles.friendCardEmoji}>{friend.avatar}</Text>
-                  </View>
-                  <Text style={styles.friendCardName}>{friend.name}</Text>
-                  <Text style={styles.friendCardHandle}>{friend.handle}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitleLarge}>Friends</Text>
+          
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.friendsScroll}
+          >
+            {friends.map((friend) => (
+              <TouchableOpacity key={friend.id} style={styles.friendCard}>
+                <View style={styles.friendCardAvatar}>
+                  <Text style={styles.friendCardEmoji}>{friend.avatar}</Text>
+                </View>
+                <Text style={styles.friendCardName}>{friend.name}</Text>
+                <Text style={styles.friendCardHandle}>{friend.handle}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
         )}
       </ScrollView>
 
@@ -772,6 +1213,99 @@ const styles = StyleSheet.create({
   goalCard: {
     paddingHorizontal: 0,
     paddingVertical: 12,
+    position: 'relative',
+  },
+  goalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    borderRadius: 12,
+    zIndex: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  goalOverlayContent: {
+    alignItems: 'center',
+  },
+  goalOverlayText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  goalOverlaySubtext: {
+    fontSize: 14,
+    color: '#888888',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  goalOverlayParticipants: {
+    marginTop: 20,
+    width: '100%',
+    gap: 12,
+  },
+  goalOverlayParticipant: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  goalOverlayParticipantAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333333',
+  },
+  goalOverlayParticipantAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  goalOverlayParticipantAvatarEmoji: {
+    fontSize: 20,
+  },
+  goalOverlayParticipantInfo: {
+    flex: 1,
+  },
+  goalOverlayParticipantName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  goalOverlayParticipantStatus: {
+    fontSize: 12,
+    color: '#ff4444',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  goalOverlayParticipantStatusPaid: {
+    color: '#4CAF50',
+  },
+  goalOverlayStartButton: {
+    marginTop: 20,
+    backgroundColor: '#4CAF50',
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goalOverlayStartButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   goalPillWrapper: {
     flexDirection: 'row',

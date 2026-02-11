@@ -4,17 +4,23 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
+import { StripeProvider } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
+import { STRIPE_PUBLISHABLE_KEY } from './lib/stripe';
 
 import GoalsScreen from './screens/GoalsScreen';
 import ProfileScreen from './screens/ProfileScreen';
-import BetsScreen from './screens/BetsScreen';
+import ProgressScreen from './screens/ProgressScreen';
 import GoalPostScreen from './screens/GoalPostScreen';
 import UserGoalsScreen from './screens/UserGoalsScreen';
 import CreateGoalListScreen from './screens/CreateGoalListScreen';
 import LoginScreen from './screens/LoginScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
+import AddFriendsToGoalScreen from './screens/AddFriendsToGoalScreen';
+import AddFriendsStepScreen from './screens/AddFriendsStepScreen';
+import GroupGoalPaymentScreen from './screens/GroupGoalPaymentScreen';
+import PayoutScreen from './screens/PayoutScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -39,6 +45,27 @@ function GoalsStack() {
           presentation: 'fullScreenModal',
         }}
       />
+      <Stack.Screen 
+        name="AddFriendsToGoal" 
+        component={AddFriendsToGoalScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen 
+        name="AddFriendsStep" 
+        component={AddFriendsStepScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen 
+        name="GroupGoalPayment" 
+        component={GroupGoalPaymentScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
     </Stack.Navigator>
   );
 }
@@ -48,31 +75,38 @@ function ProfileStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="ProfileHome" component={ProfileScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen 
+        name="Payout" 
+        component={PayoutScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
     </Stack.Navigator>
   );
 }
 
 function MainTabs() {
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName;
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName;
 
-          if (route.name === 'Goals') {
-            iconName = focused ? 'flag' : 'flag-outline';
-          } else if (route.name === 'Bets') {
+            if (route.name === 'Goals') {
+              iconName = focused ? 'flag' : 'flag-outline';
+          } else if (route.name === 'Progress') {
             iconName = focused ? 'trail-sign' : 'trail-sign-outline';
-          } else if (route.name === 'Profile') {
-            iconName = focused ? 'person' : 'person-outline';
-          }
+            } else if (route.name === 'Profile') {
+              iconName = focused ? 'person' : 'person-outline';
+            }
 
           return <Ionicons name={iconName} size={28} color={color} />;
-        },
-        tabBarActiveTintColor: '#ffffff',
-        tabBarInactiveTintColor: '#666666',
+          },
+          tabBarActiveTintColor: '#ffffff',
+          tabBarInactiveTintColor: '#666666',
         tabBarShowLabel: false,
-        tabBarStyle: {
+          tabBarStyle: {
           position: 'absolute',
           bottom: 30,
           alignSelf: 'center',
@@ -102,38 +136,38 @@ function MainTabs() {
           alignItems: 'center',
           paddingTop: 0,
           paddingBottom: 0,
-        },
-        headerStyle: {
-          backgroundColor: '#000000',
-        },
-        headerTintColor: '#ffffff',
-        headerTitleStyle: {
-          fontWeight: '500',
-        },
-      })}
-    >
-      <Tab.Screen 
-        name="Goals" 
-        component={GoalsStack}
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Tab.Screen 
-        name="Bets" 
-        component={BetsScreen}
-        options={{
-          headerShown: false,
-        }}
-      />
-      <Tab.Screen 
-        name="Profile" 
+          },
+          headerStyle: {
+            backgroundColor: '#000000',
+          },
+          headerTintColor: '#ffffff',
+          headerTitleStyle: {
+            fontWeight: '500',
+          },
+        })}
+      >
+        <Tab.Screen 
+          name="Goals" 
+          component={GoalsStack}
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Tab.Screen 
+        name="Progress" 
+        component={ProgressScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+        <Tab.Screen 
+          name="Profile" 
         component={ProfileStack}
-        options={{
-          headerShown: false,
-        }}
-      />
-    </Tab.Navigator>
+          options={{
+            headerShown: false,
+          }}
+        />
+      </Tab.Navigator>
   );
 }
 
@@ -206,19 +240,21 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer>
-      <StatusBar style="light" />
-      <RootStack.Navigator screenOptions={{ headerShown: false }}>
-        {!session ? (
-          <RootStack.Screen name="Login" component={LoginScreen} />
-        ) : !hasProfile ? (
-          <RootStack.Screen name="Onboarding" component={OnboardingScreen} />
-        ) : !hasGoals ? (
-          <RootStack.Screen name="CreateGoalList" component={CreateGoalListScreen} />
-        ) : (
-          <RootStack.Screen name="MainApp" component={MainTabs} />
-        )}
-      </RootStack.Navigator>
+    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY}>
+      <NavigationContainer>
+        <StatusBar style="light" />
+        <RootStack.Navigator screenOptions={{ headerShown: false }}>
+          {!session ? (
+            <RootStack.Screen name="Login" component={LoginScreen} />
+          ) : !hasProfile ? (
+            <RootStack.Screen name="Onboarding" component={OnboardingScreen} />
+          ) : !hasGoals ? (
+            <RootStack.Screen name="CreateGoalList" component={CreateGoalListScreen} />
+          ) : (
+            <RootStack.Screen name="MainApp" component={MainTabs} />
+          )}
+        </RootStack.Navigator>
     </NavigationContainer>
+    </StripeProvider>
   );
 }

@@ -1,7 +1,8 @@
 import { StyleSheet, Text, View, TouchableOpacity, TextInput, ScrollView, Image, Alert } from 'react-native';
 import { useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-// import * as ImagePicker from 'expo-image-picker';
+import * as ImagePicker from 'expo-image-picker';
+import { supabase } from '../lib/supabase';
 
 export default function GoalPostScreen({ route, navigation }) {
   const { goal } = route.params;
@@ -9,28 +10,66 @@ export default function GoalPostScreen({ route, navigation }) {
   const [media, setMedia] = useState([]);
 
   const pickMedia = async () => {
-    // Commented out for design phase
-    Alert.alert('Image Picker', 'Image picker is temporarily disabled for design phase');
-    
-    // const result = await ImagePicker.launchImageLibraryAsync({
-    //   mediaTypes: ImagePicker.MediaTypeOptions.All,
-    //   allowsMultipleSelection: true,
-    //   quality: 1,
-    // });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 1,
+    });
 
-    // if (!result.canceled) {
-    //   setMedia([...media, ...result.assets]);
-    // }
+    if (!result.canceled) {
+      setMedia([...media, ...result.assets]);
+    }
   };
 
   const removeMedia = (index) => {
     setMedia(media.filter((_, i) => i !== index));
   };
 
-  const handlePost = () => {
+  const handlePost = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Alert.alert('Error', 'No user found');
+        return;
+      }
+
+      // Get today's date in YYYY-MM-DD format
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayStr = today.toISOString().split('T')[0];
+
+      // Mark goal as completed
+      const { error: goalError } = await supabase
+        .from('goals')
+        .update({ completed: true })
+        .eq('id', goal.id);
+
+      if (goalError) {
+        throw goalError;
+      }
+
+      // Save completion record for today
+      const { error: completionError } = await supabase
+        .from('goal_completions')
+        .upsert({
+          goal_id: goal.id,
+          user_id: user.id,
+          completed_at: todayStr,
+        }, {
+          onConflict: 'goal_id,completed_at'
+        });
+
+      if (completionError) {
+        console.error('Error saving completion:', completionError);
+        // Don't throw - goal is already marked as completed
+      }
+
     // TODO: Upload media and save post to Supabase
     console.log('Posting:', { goal: goal.title, caption, media });
     navigation.goBack();
+    } catch (error) {
+      Alert.alert('Error', error.message || 'Failed to save completion');
+    }
   };
 
   return (

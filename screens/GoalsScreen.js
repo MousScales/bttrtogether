@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Animated, TextInput } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Animated, TextInput, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
@@ -57,9 +57,24 @@ export default function GoalsScreen({ navigation }) {
   const [goals, setGoals] = useState([]);
   const [goalLists, setGoalLists] = useState([]);
   const [currentGoalList, setCurrentGoalList] = useState(null);
+  const [ownerHasPaid, setOwnerHasPaid] = useState(true); // Track if owner has paid
+  const [ownerPaidViaStripe, setOwnerPaidViaStripe] = useState(false); // Track if owner paid via Stripe
+  const [participants, setParticipants] = useState([]); // Track all participants
+  const [allParticipantsPaid, setAllParticipantsPaid] = useState(true); // Track if all participants paid
+  const [currentUserProfile, setCurrentUserProfile] = useState(null); // Current user's profile from Supabase
+  const [currentUser, setCurrentUser] = useState(null); // Current user from auth
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
+
+  // Load current user on mount
+  useEffect(() => {
+    const loadCurrentUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setCurrentUser(user);
+    };
+    loadCurrentUser();
+  }, []);
 
   // Load goals from Supabase
   useEffect(() => {
@@ -70,21 +85,144 @@ export default function GoalsScreen({ navigation }) {
   useFocusEffect(
     React.useCallback(() => {
       loadGoals();
-    }, [])
+      if (currentGoalList) {
+        checkOwnerPaymentStatus();
+      }
+    }, [currentGoalList])
   );
 
   // Reload goals when current goal list changes
   useEffect(() => {
     if (currentGoalList) {
       loadGoalsForCurrentList();
+      checkOwnerPaymentStatus();
     }
   }, [currentGoalList]);
+
+  const checkOwnerPaymentStatus = async () => {
+    if (!currentGoalList) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      // Set current user state
+      setCurrentUser(user);
+
+      // Fetch current user's profile from Supabase
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .eq('id', user.id)
+        .single();
+      setCurrentUserProfile(profile || null);
+
+      // Hard-coded group goal requires payment
+      if (currentGoalList.id === 'hardcoded-group-goal') {
+        setOwnerHasPaid(false);
+        return;
+      }
+
+      // Check if owner has paid for group goals with payment required
+      if (currentGoalList.type === 'group' && currentGoalList.payment_required) {
+        // Verify user has access to this goal list (either owner or participant)
+        const { data: goalListCheck } = await supabase
+          .from('goal_lists')
+          .select('user_id')
+          .eq('id', currentGoalList.id)
+          .single();
+        
+        if (!goalListCheck) {
+          console.error('Goal list not found or access denied');
+          return;
+        }
+        
+        // Check if user is owner or participant
+        const isOwner = goalListCheck.user_id === user.id;
+        const { data: participantCheck } = await supabase
+          .from('group_goal_participants')
+          .select('id')
+          .eq('goal_list_id', currentGoalList.id)
+          .eq('user_id', user.id)
+          .maybeSingle();
+        
+        if (!isOwner && !participantCheck) {
+          console.error('User does not have access to this goal list');
+          return;
+        }
+        
+        // Load all participants with their payment status
+        const { data: participantsData, error: participantsError } = await supabase
+          .from('group_goal_participants')
+          .select('*')
+          .eq('goal_list_id', currentGoalList.id);
+
+        if (participantsError) {
+          console.error('Error loading participants:', participantsError);
+        } else if (participantsData) {
+          // Load profile data for each participant
+          const participantsWithProfiles = await Promise.all(
+            participantsData.map(async (participant) => {
+              const { data: profile } = await supabase
+                .from('profiles')
+                .select('id, name, username, avatar_url')
+                .eq('id', participant.user_id)
+                .single();
+              
+              return {
+                ...participant,
+                profile: profile || null,
+              };
+            })
+          );
+          
+          setParticipants(participantsWithProfiles);
+          
+          // Check if all participants have paid
+          const allPaid = participantsWithProfiles.every(p => p.payment_status === 'paid');
+          setAllParticipantsPaid(allPaid);
+          
+          // Check if current user has paid
+          const currentUserParticipant = participantsWithProfiles.find(p => p.user_id === user.id);
+          const hasPaid = currentUserParticipant?.payment_status === 'paid';
+          setOwnerHasPaid(hasPaid);
+          
+          // Check if user paid via Stripe (has a payment record with stripe_payment_intent_id)
+          if (hasPaid) {
+            const { data: paymentRecord } = await supabase
+              .from('payments')
+              .select('stripe_payment_intent_id')
+              .eq('goal_list_id', currentGoalList.id)
+              .eq('user_id', user.id)
+              .eq('status', 'succeeded')
+              .single();
+            
+            setOwnerPaidViaStripe(!!paymentRecord?.stripe_payment_intent_id);
+          } else {
+            setOwnerPaidViaStripe(false);
+          }
+        }
+      } else {
+        setOwnerHasPaid(true); // Personal goals don't need payment
+        setAllParticipantsPaid(true);
+        setParticipants([]);
+      }
+    } catch (error) {
+      console.error('Error checking payment status:', error);
+    }
+  };
 
   const loadGoalsForCurrentList = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (user && currentGoalList) {
+        // Skip loading goals for hard-coded group goal
+        if (currentGoalList.id === 'hardcoded-group-goal') {
+          setGoals([]);
+          return;
+        }
+        
         const { data, error } = await supabase
           .from('goals')
           .select('*')
@@ -94,16 +232,90 @@ export default function GoalsScreen({ navigation }) {
 
         if (error) throw error;
 
-        const transformedGoals = data.map(goal => {
+        // Get today's date string
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayStr = today.toISOString().split('T')[0];
+
+        // Get goal IDs
+        const goalIds = data.map(g => g.id);
+        
+          // Load completion records for today
+          let todayCompletions = new Set();
+          if (goalIds.length > 0) {
+            const { data: completionsData } = await supabase
+              .from('goal_completions')
+              .select('goal_id')
+              .in('goal_id', goalIds)
+              .eq('user_id', user.id)
+              .eq('completed_at', todayStr);
+            
+            if (completionsData) {
+              todayCompletions = new Set(completionsData.map(c => c.goal_id));
+            }
+          }
+
+          // Load past completion records to populate history
+          let pastCompletions = {};
+          if (goalIds.length > 0) {
+            const { data: pastCompletionsData } = await supabase
+              .from('goal_completions')
+              .select('goal_id, completed_at')
+              .in('goal_id', goalIds)
+              .eq('user_id', user.id)
+              .lt('completed_at', todayStr);
+          
+          if (pastCompletionsData) {
+            pastCompletionsData.forEach(c => {
+              const dateStr = c.completed_at.includes('T') ? c.completed_at.split('T')[0] : c.completed_at;
+              if (!pastCompletions[c.goal_id]) {
+                pastCompletions[c.goal_id] = new Set();
+              }
+              pastCompletions[c.goal_id].add(dateStr);
+            });
+          }
+        }
+
+        // Transform data to match existing format
+        const transformedGoals = await Promise.all(data.map(async (goal) => {
           const history = generateCompletionHistory(goal.created_at);
           const currentDayIndex = getCurrentDayIndex(goal.created_at);
+          
+          // Check if goal is completed today based on completion record
+          const isCompletedToday = todayCompletions.has(goal.id);
+          
+          // If goal.completed doesn't match today's completion status, update it
+          if (goal.completed !== isCompletedToday) {
+            await supabase
+              .from('goals')
+              .update({ completed: isCompletedToday })
+              .eq('id', goal.id)
+              .eq('user_id', user.id);
+          }
+          
+          // Populate past days in history from completion records
+          if (pastCompletions[goal.id]) {
+            const createdDate = new Date(goal.created_at);
+            createdDate.setHours(0, 0, 0, 0);
+            
+            pastCompletions[goal.id].forEach(dateStr => {
+              const completionDate = new Date(dateStr);
+              completionDate.setHours(0, 0, 0, 0);
+              
+              const dayIndex = Math.floor((completionDate - createdDate) / (1000 * 60 * 60 * 24));
+              if (dayIndex >= 0 && dayIndex < history.length && dayIndex < currentDayIndex) {
+                history[dayIndex] = true;
+              }
+            });
+          }
+          
           // Set today's completion status
-          history[currentDayIndex] = goal.completed;
+          history[currentDayIndex] = isCompletedToday;
           
           return {
             id: goal.id,
             title: goal.title,
-            checked: goal.completed,
+            checked: isCompletedToday,
             viewers: [],
             type: 'goal',
             validated: 0,
@@ -114,7 +326,7 @@ export default function GoalsScreen({ navigation }) {
             created_at: goal.created_at, // Store creation date
             currentDayIndex: currentDayIndex, // Store current day index for this goal
           };
-        });
+        }));
 
         setGoals(transformedGoals);
       }
@@ -137,16 +349,155 @@ export default function GoalsScreen({ navigation }) {
 
         if (listsError) throw listsError;
 
-        setGoalLists(listsData || []);
+        // Add hard-coded group goal for testing
+        const hardCodedGroupGoal = {
+          id: 'hardcoded-group-goal',
+          name: 'Test Group Goal',
+          type: 'group',
+          user_id: user.id,
+          created_at: new Date().toISOString(),
+          payment_required: true,
+          amount: 10.00,
+          consequence_type: 'money',
+        };
+
+        // Combine hard-coded goal with loaded goals
+        const allGoalLists = [hardCodedGroupGoal, ...(listsData || [])];
+        setGoalLists(allGoalLists);
         
         // Set current goal list to the first one if not set
-        if (listsData && listsData.length > 0 && !currentGoalList) {
-          setCurrentGoalList(listsData[0]);
+        if (allGoalLists.length > 0 && !currentGoalList) {
+          setCurrentGoalList(allGoalLists[0]);
         }
 
-        // Load goals for current goal list
-        if (currentGoalList || (listsData && listsData.length > 0)) {
-          const selectedList = currentGoalList || listsData[0];
+        // Load goals for current goal list if one is selected
+        if (currentGoalList) {
+          const selectedList = currentGoalList;
+          
+          // Load hard-coded goals for test group goal
+          if (selectedList.id === 'hardcoded-group-goal') {
+            // Get current user to mark own goals
+            const { data: { user: currentUser } } = await supabase.auth.getUser();
+            
+            const hardCodedGoals = [
+              // Your own goal - not completed
+              {
+                id: 'hardcoded-goal-own-1',
+                title: 'Read 30 pages',
+                checked: false,
+                viewers: [],
+                type: 'goal',
+                validated: 0,
+                totalViewers: 0,
+                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                color: '#2196F3',
+                goal_list_type: 'group',
+                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                currentDayIndex: 20,
+                hasProof: false,
+                isOwnGoal: true,
+                user_id: currentUser?.id || 'current-user',
+              },
+              // Other user's completed goal - Alex
+              {
+                id: 'hardcoded-goal-other-1',
+                title: 'Morning workout',
+                checked: true,
+                viewers: ['😎', '🤠', '🥳'],
+                type: 'goal',
+                validated: 0,
+                totalViewers: 4,
+                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                color: '#4CAF50',
+                goal_list_type: 'group',
+                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                currentDayIndex: 20,
+                hasProof: true,
+                isOwnGoal: false,
+                user_id: 'other-user-1',
+                user_name: 'Alex',
+                user_avatar: '😎',
+                user_username: '@alex',
+                caption: 'Crushed my morning workout! 💪',
+              },
+              // Your own goal - completed
+              {
+                id: 'hardcoded-goal-own-2',
+                title: 'Meditate 10 minutes',
+                checked: true,
+                viewers: [],
+                type: 'goal',
+                validated: 0,
+                totalViewers: 0,
+                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                color: '#9C27B0',
+                goal_list_type: 'group',
+                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                currentDayIndex: 20,
+                hasProof: false,
+                isOwnGoal: true,
+                user_id: currentUser?.id || 'current-user',
+              },
+              // Other user's completed goal - Sam
+              {
+                id: 'hardcoded-goal-other-2',
+                title: 'Drink 8 glasses',
+                checked: true,
+                viewers: ['🤓', '😊'],
+                type: 'goal',
+                validated: 0,
+                totalViewers: 4,
+                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                color: '#FF9800',
+                goal_list_type: 'group',
+                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                currentDayIndex: 20,
+                hasProof: true,
+                isOwnGoal: false,
+                user_id: 'other-user-2',
+                user_name: 'Sam',
+                user_avatar: '🤠',
+                user_username: '@sam',
+                caption: 'Staying hydrated! 💧',
+              },
+              // Your own goal - completed with proof
+              {
+                id: 'hardcoded-goal-own-3',
+                title: 'Cook healthy meal',
+                checked: true,
+                viewers: [],
+                type: 'goal',
+                validated: 0,
+                totalViewers: 0,
+                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                color: '#F44336',
+                goal_list_type: 'group',
+                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                currentDayIndex: 20,
+                hasProof: true,
+                isOwnGoal: true,
+                user_id: currentUser?.id || 'current-user',
+              },
+            ];
+            setGoals(hardCodedGoals);
+            setOwnerHasPaid(false); // Hard-coded goal requires payment
+            setLoading(false);
+            return;
+          }
+          
+          // Check if owner has paid for group goals with payment required
+          if (selectedList.type === 'group' && selectedList.payment_required) {
+            const { data: participant } = await supabase
+              .from('group_goal_participants')
+              .select('payment_status')
+              .eq('goal_list_id', selectedList.id)
+              .eq('user_id', user.id)
+              .single();
+            
+            setOwnerHasPaid(participant?.payment_status === 'paid');
+          } else {
+            setOwnerHasPaid(true); // Personal goals don't need payment
+          }
           
           const { data, error } = await supabase
             .from('goals')
@@ -157,17 +508,90 @@ export default function GoalsScreen({ navigation }) {
 
           if (error) throw error;
 
+          // Get today's date string
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const todayStr = today.toISOString().split('T')[0];
+
+          // Get goal IDs
+          const goalIds = data.map(g => g.id);
+          
+          // Load completion records for today
+          let todayCompletions = new Set();
+          if (goalIds.length > 0) {
+            const { data: completionsData } = await supabase
+              .from('goal_completions')
+              .select('goal_id')
+              .in('goal_id', goalIds)
+              .eq('user_id', user.id)
+              .eq('completed_at', todayStr);
+            
+            if (completionsData) {
+              todayCompletions = new Set(completionsData.map(c => c.goal_id));
+            }
+          }
+
+          // Load past completion records to populate history
+          let pastCompletions = {};
+          if (goalIds.length > 0) {
+            const { data: pastCompletionsData } = await supabase
+              .from('goal_completions')
+              .select('goal_id, completed_at')
+              .in('goal_id', goalIds)
+              .eq('user_id', user.id)
+              .lt('completed_at', todayStr);
+            
+            if (pastCompletionsData) {
+              pastCompletionsData.forEach(c => {
+                const dateStr = c.completed_at.includes('T') ? c.completed_at.split('T')[0] : c.completed_at;
+                if (!pastCompletions[c.goal_id]) {
+                  pastCompletions[c.goal_id] = new Set();
+                }
+                pastCompletions[c.goal_id].add(dateStr);
+              });
+            }
+          }
+
           // Transform data to match existing format
-          const transformedGoals = data.map(goal => {
+          const transformedGoals = await Promise.all(data.map(async (goal) => {
             const history = generateCompletionHistory(goal.created_at);
             const currentDayIndex = getCurrentDayIndex(goal.created_at);
+            
+            // Check if goal is completed today based on completion record
+            const isCompletedToday = todayCompletions.has(goal.id);
+            
+            // If goal.completed doesn't match today's completion status, update it
+            if (goal.completed !== isCompletedToday) {
+              await supabase
+                .from('goals')
+                .update({ completed: isCompletedToday })
+                .eq('id', goal.id)
+                .eq('user_id', user.id);
+            }
+            
+            // Populate past days in history from completion records
+            if (pastCompletions[goal.id]) {
+              const createdDate = new Date(goal.created_at);
+              createdDate.setHours(0, 0, 0, 0);
+              
+              pastCompletions[goal.id].forEach(dateStr => {
+                const completionDate = new Date(dateStr);
+                completionDate.setHours(0, 0, 0, 0);
+                
+                const dayIndex = Math.floor((completionDate - createdDate) / (1000 * 60 * 60 * 24));
+                if (dayIndex >= 0 && dayIndex < history.length && dayIndex < currentDayIndex) {
+                  history[dayIndex] = true;
+                }
+              });
+            }
+            
             // Set today's completion status
-            history[currentDayIndex] = goal.completed;
+            history[currentDayIndex] = isCompletedToday;
             
             return {
               id: goal.id,
               title: goal.title,
-              checked: goal.completed,
+              checked: isCompletedToday,
               viewers: [],
               type: 'goal',
               validated: 0,
@@ -178,7 +602,7 @@ export default function GoalsScreen({ navigation }) {
               created_at: goal.created_at, // Store creation date
               currentDayIndex: currentDayIndex, // Store current day index for this goal
             };
-          });
+          }));
 
           setGoals(transformedGoals);
         } else {
@@ -199,8 +623,8 @@ export default function GoalsScreen({ navigation }) {
 
   const toggleValidation = (id) => {
     setGoals(goals.map(item => 
-      item.id === id && item.type === 'validation' 
-        ? { ...item, validated: !item.validated } 
+      item.id === id
+        ? { ...item, validated: item.validated > 0 ? 0 : 1 } 
         : item
     ));
   };
@@ -208,6 +632,15 @@ export default function GoalsScreen({ navigation }) {
   const toggleGoal = async (id) => {
     const goal = goals.find(g => g.id === id && g.type === 'goal');
     if (!goal) return;
+
+    // Get current user
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // Get today's date in YYYY-MM-DD format
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().split('T')[0];
 
     // For personal goals, directly toggle without navigation
     if (goal.goal_list_type === 'personal') {
@@ -217,9 +650,32 @@ export default function GoalsScreen({ navigation }) {
       const { error } = await supabase
         .from('goals')
         .update({ completed: newChecked })
-        .eq('id', id);
+        .eq('id', id)
+        .eq('user_id', user.id);
 
       if (!error) {
+        // Save or delete completion record for today
+        if (newChecked) {
+          // Insert completion record for today
+          await supabase
+            .from('goal_completions')
+            .upsert({
+              goal_id: id,
+              user_id: user.id,
+              completed_at: todayStr,
+            }, {
+              onConflict: 'goal_id,completed_at'
+            });
+        } else {
+          // Delete completion record for today if unchecking
+          await supabase
+            .from('goal_completions')
+            .delete()
+            .eq('goal_id', id)
+            .eq('user_id', user.id)
+            .eq('completed_at', todayStr);
+        }
+
         // Update local state
         setGoals(goals.map(g => {
           if (g.id === id) {
@@ -245,9 +701,18 @@ export default function GoalsScreen({ navigation }) {
         const { error } = await supabase
           .from('goals')
           .update({ completed: newChecked })
-          .eq('id', id);
+          .eq('id', id)
+          .eq('user_id', user.id);
 
         if (!error) {
+          // Delete completion record for today
+          await supabase
+            .from('goal_completions')
+            .delete()
+            .eq('goal_id', id)
+            .eq('user_id', user.id)
+            .eq('completed_at', todayStr);
+
           setGoals(goals.map(g => {
             if (g.id === id) {
               const updatedHistory = [...(g.completionHistory || [])];
@@ -265,15 +730,30 @@ export default function GoalsScreen({ navigation }) {
     }
   };
 
-  // Placeholder for friends - will implement later
-  const friends = [];
+  // Get friends for current goal list (hard-coded for test group goal)
+  const friends = currentGoalList?.id === 'hardcoded-group-goal' 
+    ? [
+        { id: '1', emoji: '😎', name: 'Alex', progress: 0.8 },
+        { id: '2', emoji: '🤠', name: 'Sam', progress: 0.6 },
+        { id: '3', emoji: '🥳', name: 'Jordan', progress: 0.9 },
+        { id: '4', emoji: '🤓', name: 'Taylor', progress: 0.7 },
+      ]
+    : [];
 
-  // Create animated values for each friend
-  const floatAnims = useRef(friends.map(() => new Animated.Value(0))).current;
+  // Create animated values for each friend - recreate when friends change
+  const floatAnims = useRef([]);
+  
+  useEffect(() => {
+    // Recreate animated values when friends change
+    floatAnims.current = friends.map(() => new Animated.Value(0));
+  }, [friends.length]);
 
   useEffect(() => {
+    if (floatAnims.current.length === 0) return;
+    
     // Create floating animation for each avatar
-    const animations = floatAnims.map((anim, index) => {
+    const animations = floatAnims.current.map((anim, index) => {
+      if (!anim) return null;
       return Animated.loop(
         Animated.sequence([
           Animated.timing(anim, {
@@ -288,12 +768,12 @@ export default function GoalsScreen({ navigation }) {
           }),
         ])
       );
-    });
+    }).filter(Boolean);
 
     animations.forEach(animation => animation.start());
 
     return () => animations.forEach(animation => animation.stop());
-  }, []);
+  }, [friends.length]);
 
   // Countdown timer for day
   useEffect(() => {
@@ -348,6 +828,87 @@ export default function GoalsScreen({ navigation }) {
       )}
 
       <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.challengesContainer}>
+        {/* Floating Friends - Only for group goals */}
+        {currentGoalList?.type === 'group' && friends.length > 0 && (
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={styles.friendsScrollView}
+            contentContainerStyle={styles.friendsContainer}
+          >
+            {friends.map((friend, index) => {
+              const floatAnim = floatAnims.current[index];
+              if (!floatAnim) return null;
+              
+              const translateY = floatAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -10],
+              });
+              
+              return (
+                <Animated.View
+                  key={friend.id}
+                  style={[
+                    styles.friendItem,
+                    {
+                      transform: [{ translateY }],
+                    },
+                  ]}
+                >
+                  <View style={styles.avatarWithProgress}>
+                    <Svg width={64} height={64} style={styles.progressRing}>
+                      <Circle
+                        cx={32}
+                        cy={32}
+                        r={30}
+                        stroke="#2a2a2a"
+                        strokeWidth={3}
+                        fill="none"
+                      />
+                      <Circle
+                        cx={32}
+                        cy={32}
+                        r={30}
+                        stroke="#4CAF50"
+                        strokeWidth={3}
+                        fill="none"
+                        strokeDasharray={2 * Math.PI * 30}
+                        strokeDashoffset={2 * Math.PI * 30 * (1 - friend.progress)}
+                        strokeLinecap="round"
+                        rotation="-90"
+                        origin="32, 32"
+                      />
+                    </Svg>
+                    <View style={styles.avatarCircle}>
+                      <Text style={styles.avatarEmoji}>{friend.emoji}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.friendName}>{friend.name}</Text>
+                </Animated.View>
+              );
+            })}
+          </ScrollView>
+        )}
+
+        {/* Duration/Deadline Info - Only for group goals */}
+        {currentGoalList?.type === 'group' && currentGoalList && (
+          <View style={styles.durationContainer}>
+            {currentGoalList.deadline && (
+              <Text style={styles.durationText}>
+                Deadline: {new Date(currentGoalList.deadline).toLocaleDateString()}
+              </Text>
+            )}
+            {currentGoalList.duration_days && (
+              <Text style={styles.durationText}>
+                Duration: {currentGoalList.duration_days} days
+              </Text>
+            )}
+            {currentGoalList.is_unlimited && (
+              <Text style={styles.durationText}>Duration: Unlimited</Text>
+            )}
+          </View>
+        )}
+
         {/* Countdown Timer - Only show if there are goals */}
         {goals.length > 0 && (
           <View style={styles.countdownContainerOuter}>
@@ -358,8 +919,8 @@ export default function GoalsScreen({ navigation }) {
 
         {/* Personal Goals */}
         <View style={styles.personalGoalsContainer}>
-          {/* Show placeholder if no goals */}
-          {goals.length === 0 ? (
+          {/* Show placeholder if no goals (but not for test group goal) */}
+          {goals.length === 0 && currentGoalList?.id !== 'hardcoded-group-goal' ? (
             <View style={styles.placeholderContainer}>
               <TouchableOpacity onPress={() => navigation.navigate('CreateGoalList')}>
                 <Text style={styles.placeholderText}>START YOUR ADVENTURE</Text>
@@ -367,34 +928,44 @@ export default function GoalsScreen({ navigation }) {
             </View>
           ) : (
             /* Goals List */
-            goals.filter(item => item.type === 'goal').map((item) => (
-            <View key={item.id} style={styles.personalGoalItem}>
-              <View style={styles.goalPillWrapper}>
-                <TouchableOpacity 
-                  onPress={() => {
-                    setEditingGoalId(item.id);
-                    setNewGoalName(item.title);
-                    setEditGoalModalVisible(true);
-                  }}
-                  style={{ flex: 1 }}
-                >
-                  <Text style={styles.goalTitleText}>{item.title}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.statusContainer}
-                  onPress={() => toggleGoal(item.id)}
-                >
-                  <Text style={[
-                    styles.statusText,
-                    item.checked && styles.statusTextCompleted
-                  ]}>
-                    {item.checked ? 'COMPLETED' : 'COMPLETE'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+            <>
+              {goals.filter(item => item.type === 'goal').map((item) => {
+              const isOtherUserGoal = item.goal_list_type === 'group' && !item.isOwnGoal;
               
-              {/* Completion History Grid - Carousel with 3 rows */}
-              {item.completionHistory && (() => {
+              return (
+                <View key={item.id} style={[
+                  styles.personalGoalItem,
+                  isOtherUserGoal && item.checked && item.hasProof && styles.otherUserPostItem
+                ]}>
+              {/* Goal Title and Complete Button - Only for own goals */}
+              {!isOtherUserGoal && (
+                <View style={styles.goalPillWrapper}>
+                  <TouchableOpacity 
+                    onPress={() => {
+                      setEditingGoalId(item.id);
+                      setNewGoalName(item.title);
+                      setEditGoalModalVisible(true);
+                    }}
+                    style={{ flex: 1 }}
+                  >
+                    <Text style={styles.goalTitleText}>{item.title}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.statusContainer}
+                    onPress={() => toggleGoal(item.id)}
+                  >
+                    <Text style={[
+                      styles.statusText,
+                      item.checked && styles.statusTextCompleted
+                    ]}>
+                      {item.checked ? 'COMPLETED' : 'COMPLETE'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              
+              {/* Completion History - Only for own goals */}
+              {!isOtherUserGoal && item.completionHistory && (() => {
                 const totalBoxes = item.completionHistory.length;
                 const numRows = 3; // Always 3 rows
                 const boxesPerColumn = numRows; // 3 boxes per column
@@ -452,8 +1023,87 @@ export default function GoalsScreen({ navigation }) {
                   </ScrollView>
                 );
               })()}
-            </View>
-          ))
+              
+              {/* Other User's Post - Image, Caption, Validate Section */}
+              {isOtherUserGoal && item.checked && item.hasProof && (
+                <>
+                  {/* Separator Line with spacing */}
+                  <View style={styles.postSeparator} />
+                  
+                  {/* Other User's Goal Header */}
+                  <TouchableOpacity 
+                    style={styles.otherUserHeader}
+                    onPress={() => {
+                      // Navigate to user profile
+                      navigation.navigate('UserGoals', {
+                        user: {
+                          id: item.user_id,
+                          name: item.user_name,
+                          emoji: item.user_avatar,
+                          username: item.user_username,
+                          progress: 0.8,
+                        }
+                      });
+                    }}
+                  >
+                    <View style={styles.otherUserAvatar}>
+                      <Text style={styles.otherUserAvatarEmoji}>{item.user_avatar || '👤'}</Text>
+                    </View>
+                    <View style={styles.otherUserInfo}>
+                      <Text style={styles.otherUserName}>{item.user_name || 'User'}</Text>
+                      <Text style={styles.otherUserUsername}>{item.user_username?.replace('@', '') || 'username'}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  
+                  {/* Goal Title - Under profile picture */}
+                  <Text style={styles.otherUserGoalTitle}>{item.title}</Text>
+                  
+                  {/* Caption */}
+                  {item.caption && (
+                    <Text style={styles.postCaption}>{item.caption}</Text>
+                  )}
+                  
+                  <View style={styles.imagePlaceholder}>
+                    <Ionicons name="image-outline" size={48} color="#666666" />
+                  </View>
+                  
+                  {/* Viewers and Validation - Inline */}
+                  <View style={styles.viewersSection}>
+                    <View style={styles.viewersRow}>
+                      {item.viewers && item.viewers.slice(0, 4).map((emoji, index) => (
+                        <View 
+                          key={index} 
+                          style={[
+                            styles.viewerAvatar,
+                            index > 0 && { marginLeft: -8 }
+                          ]}
+                        >
+                          <Text style={styles.viewerEmoji}>{emoji}</Text>
+                        </View>
+                      ))}
+                    </View>
+                    <Text style={styles.validationCount}>
+                      {item.validated || 0}/{item.totalViewers || 0} have validated
+                    </Text>
+                    <TouchableOpacity 
+                      style={styles.validateButtonTextOnly}
+                      onPress={() => toggleValidation(item.id)}
+                    >
+                      <Text style={[
+                        styles.validateButtonTextOnlyText,
+                        item.validated > 0 && styles.validateButtonTextOnlyTextActive
+                      ]}>
+                        {item.validated > 0 ? 'Validated' : 'Validate'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                </>
+              )}
+              </View>
+              );
+              })}
+            </>
           )}
 
           {/* Add Goal Button - Show only if there are goal lists */}
@@ -493,10 +1143,180 @@ export default function GoalsScreen({ navigation }) {
                     styles.dropdownItem,
                     currentGoalList?.id === list.id && styles.dropdownItemSelected
                   ]}
-                  onPress={() => {
-                    setCurrentGoalList(list);
+                  onPress={async () => {
                     setDropdownVisible(false);
-                    loadGoals();
+                    // Clear goals first
+                    setGoals([]);
+                    
+                    // Set the new current goal list
+                    setCurrentGoalList(list);
+                    
+                    // Load goals for the selected list
+                    if (list.id === 'hardcoded-group-goal') {
+                      // Load hard-coded goals for test group goal
+                      // Get current user to mark own goals
+                      const { data: { user: currentUser } } = await supabase.auth.getUser();
+                      
+                      const hardCodedGoals = [
+                        // Your own goal - not completed
+                        {
+                          id: 'hardcoded-goal-own-1',
+                          title: 'Read 30 pages',
+                          checked: false,
+                          viewers: [],
+                          type: 'goal',
+                          validated: 0,
+                          totalViewers: 0,
+                          completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                          color: '#2196F3',
+                          goal_list_type: 'group',
+                          created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                          currentDayIndex: 20,
+                          hasProof: false,
+                          isOwnGoal: true,
+                          user_id: currentUser?.id || 'current-user',
+                        },
+                        // Other user's completed goal - Alex
+                        {
+                          id: 'hardcoded-goal-other-1',
+                          title: 'Morning workout',
+                          checked: true,
+                          viewers: ['😎', '🤠', '🥳'],
+                          type: 'goal',
+                          validated: 0,
+                          totalViewers: 4,
+                          completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                          color: '#4CAF50',
+                          goal_list_type: 'group',
+                          created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                          currentDayIndex: 20,
+                          hasProof: true,
+                          isOwnGoal: false,
+                          user_id: 'other-user-1',
+                          user_name: 'Alex',
+                          user_avatar: '😎',
+                          user_username: '@alex',
+                          caption: 'Crushed my morning workout! 💪',
+                        },
+                        // Your own goal - completed
+                        {
+                          id: 'hardcoded-goal-own-2',
+                          title: 'Meditate 10 minutes',
+                          checked: true,
+                          viewers: [],
+                          type: 'goal',
+                          validated: 0,
+                          totalViewers: 0,
+                          completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                          color: '#9C27B0',
+                          goal_list_type: 'group',
+                          created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                          currentDayIndex: 20,
+                          hasProof: false,
+                          isOwnGoal: true,
+                          user_id: currentUser?.id || 'current-user',
+                        },
+                        // Other user's completed goal - Sam
+                        {
+                          id: 'hardcoded-goal-other-2',
+                          title: 'Drink 8 glasses',
+                          checked: true,
+                          viewers: ['🤓', '😊'],
+                          type: 'goal',
+                          validated: 0,
+                          totalViewers: 4,
+                          completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                          color: '#FF9800',
+                          goal_list_type: 'group',
+                          created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                          currentDayIndex: 20,
+                          hasProof: true,
+                          isOwnGoal: false,
+                          user_id: 'other-user-2',
+                          user_name: 'Sam',
+                          user_avatar: '🤠',
+                          user_username: '@sam',
+                          caption: 'Staying hydrated! 💧',
+                        },
+                        // Your own goal - completed with proof
+                        {
+                          id: 'hardcoded-goal-own-3',
+                          title: 'Cook healthy meal',
+                          checked: true,
+                          viewers: [],
+                          type: 'goal',
+                          validated: 0,
+                          totalViewers: 0,
+                          completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
+                          color: '#F44336',
+                          goal_list_type: 'group',
+                          created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+                          currentDayIndex: 20,
+                          hasProof: true,
+                          isOwnGoal: true,
+                          user_id: currentUser?.id || 'current-user',
+                        },
+                      ];
+                      setGoals(hardCodedGoals);
+                      setOwnerHasPaid(false);
+                    } else {
+                      // Load goals from Supabase for this goal list
+                      // Use the list parameter directly instead of waiting for state update
+                      const { data: { user } } = await supabase.auth.getUser();
+                      
+                      if (user) {
+                        // Check payment status
+                        if (list.type === 'group' && list.payment_required) {
+                          const { data: participant } = await supabase
+                            .from('group_goal_participants')
+                            .select('payment_status')
+                            .eq('goal_list_id', list.id)
+                            .eq('user_id', user.id)
+                            .single();
+                          
+                          setOwnerHasPaid(participant?.payment_status === 'paid');
+                        } else {
+                          setOwnerHasPaid(true);
+                        }
+                        
+                        // Load goals
+                        const { data, error } = await supabase
+                          .from('goals')
+                          .select('*')
+                          .eq('user_id', user.id)
+                          .eq('goal_list_id', list.id)
+                          .order('created_at', { ascending: true });
+
+                        if (error) {
+                          console.error('Error loading goals:', error);
+                        } else {
+                          const transformedGoals = (data || []).map(goal => {
+                            const history = generateCompletionHistory(goal.created_at);
+                            const currentDayIndex = getCurrentDayIndex(goal.created_at);
+                            history[currentDayIndex] = goal.completed;
+                            
+                            return {
+                              id: goal.id,
+                              title: goal.title,
+                              checked: goal.completed,
+                              viewers: [],
+                              type: 'goal',
+                              validated: 0,
+                              totalViewers: 0,
+                              completionHistory: history,
+                              color: getRandomColor(),
+                              goal_list_type: list.type,
+                              created_at: goal.created_at,
+                              currentDayIndex: currentDayIndex,
+                              isOwnGoal: true,
+                              user_id: user.id,
+                            };
+                          });
+                          
+                          setGoals(transformedGoals);
+                        }
+                      }
+                    }
                   }}
                 >
                   <Text style={[
@@ -637,11 +1457,16 @@ export default function GoalsScreen({ navigation }) {
                   style={[styles.addButton, !newGoalName.trim() && styles.addButtonDisabled]}
                   onPress={async () => {
                     if (newGoalName.trim()) {
+                      // Get current user
+                      const { data: { user: currentUser } } = await supabase.auth.getUser();
+                      if (!currentUser) return;
+                      
                       // Update in Supabase
                       const { error } = await supabase
                         .from('goals')
                         .update({ title: newGoalName.trim() })
-                        .eq('id', editingGoalId);
+                        .eq('id', editingGoalId)
+                        .eq('user_id', currentUser.id);
 
                       if (!error) {
                         // Update local state
@@ -666,6 +1491,348 @@ export default function GoalsScreen({ navigation }) {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Payment Overlay - Outside ScrollView for proper positioning */}
+      {currentGoalList?.type === 'group' && currentGoalList?.id !== 'hardcoded-group-goal' && currentUser && (() => {
+        const otherParticipants = participants.filter(p => p.user_id !== currentUser?.id);
+        const hasOtherParticipants = otherParticipants.length > 0;
+        const showOverlay = !allParticipantsPaid || !hasOtherParticipants;
+        
+        if (!showOverlay) return null;
+        
+        // Get current user's participant data
+        const currentUserParticipant = participants.find(p => p.user_id === currentUser?.id);
+        const amountPerPerson = parseFloat(currentGoalList.amount || 0);
+        const totalParticipants = participants.length;
+        const totalAmount = amountPerPerson * totalParticipants;
+        
+        // Use profile from participant if available, otherwise use fetched profile from Supabase
+        const displayProfile = currentUserParticipant?.profile || currentUserProfile || {};
+        
+        // Get creator ID
+        const creatorId = currentGoalList.user_id;
+        
+        return (
+          <View style={styles.paymentOverlayContainer}>
+            {/* Blurred Background */}
+            <View style={styles.paymentOverlayBackdrop} />
+            
+            {/* Content directly on blurred background */}
+            <View style={styles.paymentOverlayContent}>
+              {/* Total Amount at Top - Only for money */}
+              {currentGoalList.consequence_type === 'money' && (
+                <View style={styles.totalAmountContainer}>
+                  <Text style={styles.totalAmountLabel}>Total Amount</Text>
+                  <Text style={styles.totalAmountValue}>
+                    ${totalAmount.toFixed(2)}
+                  </Text>
+                  <Text style={styles.totalAmountSubtext}>
+                    ${amountPerPerson.toFixed(2)} × {totalParticipants} {totalParticipants === 1 ? 'person' : 'people'}
+                  </Text>
+                </View>
+              )}
+              
+              {/* Punishment at Top - Only for punishment */}
+              {currentGoalList.consequence_type === 'punishment' && currentGoalList.consequence && (
+                <View style={styles.totalAmountContainer}>
+                  <Text style={styles.totalAmountLabel}>Punishment</Text>
+                  <Text style={styles.totalAmountValue}>
+                    {currentGoalList.consequence}
+                  </Text>
+                </View>
+              )}
+              
+              {/* For Punishment Goals: Match money overlay structure */}
+              {currentGoalList.consequence_type === 'punishment' ? (
+                <>
+                  {/* Status Section */}
+                  <View style={styles.statusSection}>
+                    <Text style={styles.statusSectionTitle}>Status</Text>
+                    
+                    {/* You Section - No rectangle */}
+                    <View style={styles.youStatusItemNoBox}>
+                      <View style={styles.youStatusLeft}>
+                        <View style={styles.youStatusAvatar}>
+                          {displayProfile.avatar_url ? (
+                            <Image 
+                              source={{ uri: displayProfile.avatar_url }} 
+                              style={styles.youStatusAvatarImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Text style={styles.youStatusAvatarEmoji}>👤</Text>
+                          )}
+                        </View>
+                        <View style={styles.youStatusInfo}>
+                          <Text style={styles.youStatusName}>
+                            {displayProfile.name || 'User'}
+                          </Text>
+                          <Text style={styles.youStatusUsername}>
+                            {displayProfile.username?.replace('@', '') || 'username'}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.youStatusRight}>
+                        {ownerHasPaid ? (
+                          <TouchableOpacity 
+                            onPress={async () => {
+                              const { data: { user } } = await supabase.auth.getUser();
+                              if (user) {
+                                const { error } = await supabase
+                                  .from('group_goal_participants')
+                                  .upsert({
+                                    goal_list_id: currentGoalList.id,
+                                    user_id: user.id,
+                                    payment_status: 'pending'
+                                  }, {
+                                    onConflict: 'goal_list_id,user_id'
+                                  });
+                                
+                                if (!error) {
+                                  await checkOwnerPaymentStatus();
+                                } else {
+                                  console.error('Error unaccepting punishment:', error);
+                                }
+                              }
+                            }}
+                          >
+                            <Text style={styles.youStatusBadgeTextPaid}>
+                              Accepted
+                            </Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <TouchableOpacity 
+                            onPress={async () => {
+                              const { data: { user } } = await supabase.auth.getUser();
+                              if (user) {
+                                const { error } = await supabase
+                                  .from('group_goal_participants')
+                                  .upsert({
+                                    goal_list_id: currentGoalList.id,
+                                    user_id: user.id,
+                                    payment_status: 'paid'
+                                  }, {
+                                    onConflict: 'goal_list_id,user_id'
+                                  });
+                                
+                                if (!error) {
+                                  await checkOwnerPaymentStatus();
+                                } else {
+                                  console.error('Error accepting punishment:', error);
+                                }
+                              }
+                            }}
+                          >
+                            <Text style={styles.youStatusBadgeText}>
+                              Accept
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                  
+                  {/* Other Users or Add User Section */}
+                  {hasOtherParticipants ? (
+                    <View style={styles.otherUsersSection}>
+                      <Text style={styles.otherUsersTitle}>Other Participants</Text>
+                      <ScrollView style={styles.otherUsersList} showsVerticalScrollIndicator={false}>
+                        {participants
+                          .filter(p => p.user_id !== currentUser?.id)
+                          .map((participant) => {
+                            const profile = participant.profile || {};
+                            const hasAccepted = participant.payment_status === 'paid';
+                            
+                            return (
+                              <View key={participant.id} style={styles.otherUserItem}>
+                                <View style={styles.otherUserLeft}>
+                                  <View style={styles.otherUserAvatar}>
+                                    {profile.avatar_url ? (
+                                      <Image 
+                                        source={{ uri: profile.avatar_url }} 
+                                        style={styles.otherUserAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.otherUserAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.otherUserInfo}>
+                                    <Text style={styles.otherUserName}>
+                                      {profile.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.otherUserUsername}>
+                                      {profile.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.otherUserRight}>
+                                  <Text style={hasAccepted ? styles.otherUserBadgeTextPaid : styles.otherUserBadgeText}>
+                                    {hasAccepted ? 'Accepted' : 'Not Accepted'}
+                                  </Text>
+                                </View>
+                              </View>
+                            );
+                          })}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View style={styles.addUserSection}>
+                      <Text style={styles.addUserText}>
+                        Add at least one friend to start
+                      </Text>
+                      <TouchableOpacity 
+                        style={styles.addUserButtonTextOnly}
+                        onPress={() => {
+                          navigation.navigate('AddFriendsToGoal', {
+                            goalListId: currentGoalList.id,
+                            goalListName: currentGoalList.name,
+                          });
+                        }}
+                      >
+                        <Text style={styles.addUserButtonTextUnderlined}>Add User</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
+              ) : (
+                // Money Goals: Keep existing layout
+                <>
+                  {/* Status Section */}
+                  <View style={styles.statusSection}>
+                    <Text style={styles.statusSectionTitle}>Status</Text>
+                    
+                    {/* You Section - No rectangle */}
+                    <View style={styles.youStatusItemNoBox}>
+                      <View style={styles.youStatusLeft}>
+                        <View style={styles.youStatusAvatar}>
+                          {displayProfile.avatar_url ? (
+                            <Image 
+                              source={{ uri: displayProfile.avatar_url }} 
+                              style={styles.youStatusAvatarImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Text style={styles.youStatusAvatarEmoji}>👤</Text>
+                          )}
+                        </View>
+                        <View style={styles.youStatusInfo}>
+                          <Text style={styles.youStatusName}>
+                            {displayProfile.name || 'User'}
+                          </Text>
+                          <Text style={styles.youStatusUsername}>
+                            {displayProfile.username?.replace('@', '') || 'username'}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.youStatusRight}>
+                        {ownerPaidViaStripe ? (
+                          <Text style={styles.youStatusBadgeTextPaid}>
+                            Paid
+                          </Text>
+                        ) : (
+                          <TouchableOpacity 
+                            onPress={() => {
+                              navigation.navigate('GroupGoalPayment', {
+                                goalListId: currentGoalList.id,
+                                amount: currentGoalList.amount,
+                                goalListName: currentGoalList.name,
+                              });
+                            }}
+                          >
+                            <Text style={styles.youStatusBadgeText}>
+                              Not Paid
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                  
+                  {/* Other Users or Add User Section */}
+                  {hasOtherParticipants ? (
+                    <View style={styles.otherUsersSection}>
+                      <Text style={styles.otherUsersTitle}>Other Participants</Text>
+                      <ScrollView style={styles.otherUsersList} showsVerticalScrollIndicator={false}>
+                        {participants
+                          .filter(p => p.user_id !== currentUser?.id)
+                          .map((participant) => {
+                            const profile = participant.profile || {};
+                            const hasPaid = participant.payment_status === 'paid';
+                            
+                            return (
+                              <View key={participant.id} style={styles.otherUserItem}>
+                                <View style={styles.otherUserLeft}>
+                                  <View style={styles.otherUserAvatar}>
+                                    {profile.avatar_url ? (
+                                      <Image 
+                                        source={{ uri: profile.avatar_url }} 
+                                        style={styles.otherUserAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.otherUserAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.otherUserInfo}>
+                                    <Text style={styles.otherUserName}>
+                                      {profile.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.otherUserUsername}>
+                                      {profile.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.otherUserRight}>
+                                  <Text style={hasPaid ? styles.otherUserBadgeTextPaid : styles.otherUserBadgeText}>
+                                    {hasPaid ? 'Paid' : 'Not Paid'}
+                                  </Text>
+                                </View>
+                              </View>
+                            );
+                          })}
+                      </ScrollView>
+                    </View>
+                  ) : (
+                    <View style={styles.addUserSection}>
+                      <Text style={styles.addUserText}>
+                        Add at least one friend to start
+                      </Text>
+                      <TouchableOpacity 
+                        style={styles.addUserButtonTextOnly}
+                        onPress={() => {
+                          navigation.navigate('AddFriendsToGoal', {
+                            goalListId: currentGoalList.id,
+                            goalListName: currentGoalList.name,
+                          });
+                        }}
+                      >
+                        <Text style={styles.addUserButtonTextUnderlined}>Add User</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </>
+              )}
+              
+              {/* Pay Button - Only show if current user hasn't paid and has other participants */}
+              {hasOtherParticipants && !ownerHasPaid && currentGoalList.consequence_type === 'money' && (
+                <TouchableOpacity 
+                  style={styles.payNowButton}
+                  onPress={() => {
+                    navigation.navigate('GroupGoalPayment', {
+                      goalListId: currentGoalList.id,
+                      amount: currentGoalList.amount,
+                      goalListName: currentGoalList.name,
+                    });
+                  }}
+                >
+                  <Text style={styles.payNowButtonText}>Pay Now</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        );
+      })()}
     </View>
   );
 }
@@ -680,7 +1847,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 80,
     left: 20,
-    zIndex: 10,
+    zIndex: 10001,
+    elevation: 10001,
   },
   dateText: {
     fontSize: 28,
@@ -693,7 +1861,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 80,
     right: 20,
-    zIndex: 10,
+    zIndex: 10001,
+    elevation: 10001,
   },
   switcherButton: {
     flexDirection: 'row',
@@ -754,6 +1923,19 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     gap: 8,
   },
+  durationContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 4,
+    alignItems: 'center',
+  },
+  durationText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#888888',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   countdownContainerOuter: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -785,12 +1967,16 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    zIndex: 10002,
+    elevation: 10002,
   },
   dropdownMenuContainer: {
     position: 'absolute',
     top: 120,
     alignSelf: 'center',
     width: 200,
+    zIndex: 10003,
+    elevation: 10003,
   },
   dropdownMenu: {
     backgroundColor: '#1a1a1a',
@@ -909,6 +2095,17 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: '#888888',
   },
+  viewersSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 12,
+    flexWrap: 'wrap',
+  },
+  viewersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   viewerAvatar: {
     width: 32,
     height: 32,
@@ -968,6 +2165,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#2a2a2a',
+    marginTop: 12,
+  },
+  postInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  postDate: {
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#888888',
   },
   validateButton: {
     flexDirection: 'row',
@@ -992,6 +2201,71 @@ const styles = StyleSheet.create({
   },
   validateButtonTextActive: {
     color: '#4CAF50',
+  },
+  validateButtonTextOnly: {
+    marginLeft: 'auto',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  validateButtonTextOnlyText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#888888',
+  },
+  validateButtonTextOnlyTextActive: {
+    color: '#4CAF50',
+  },
+  postSeparator: {
+    height: 1,
+    backgroundColor: '#2a2a2a',
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  otherUserHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  otherUserAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#1a1a1a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  otherUserAvatarEmoji: {
+    fontSize: 24,
+  },
+  otherUserInfo: {
+    flex: 1,
+  },
+  otherUserName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  otherUserUsername: {
+    fontSize: 13,
+    color: '#888888',
+  },
+  otherUserGoalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginTop: 8,
+    marginBottom: 8,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  postCaption: {
+    fontSize: 15,
+    color: '#ffffff',
+    marginTop: 12,
+    marginBottom: 8,
+    lineHeight: 20,
   },
   checkbox: {
     width: 28,
@@ -1030,6 +2304,13 @@ const styles = StyleSheet.create({
   },
   personalGoalItem: {
     marginBottom: 0,
+  },
+  otherUserPostItem: {
+    marginTop: 20,
+    marginBottom: 20,
+  },
+  postSpacing: {
+    marginBottom: 16,
   },
   goalTitleText: {
     fontSize: 24,
@@ -1172,6 +2453,499 @@ const styles = StyleSheet.create({
     color: '#888888',
     textAlign: 'center',
     letterSpacing: 1,
+  },
+  paymentOverlayContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  paymentOverlayBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+  },
+  paymentOverlayContent: {
+    width: '90%',
+    maxWidth: 420,
+    maxHeight: '90%',
+    zIndex: 10000,
+    elevation: 10000,
+    paddingHorizontal: 20,
+  },
+  totalAmountContainer: {
+    alignItems: 'center',
+    marginBottom: 28,
+    paddingBottom: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  totalAmountLabel: {
+    fontSize: 12,
+    color: '#888888',
+    marginBottom: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+    fontWeight: '600',
+  },
+  totalAmountValue: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: '#4CAF50',
+    marginBottom: 6,
+    letterSpacing: 0.5,
+  },
+  totalAmountSubtext: {
+    fontSize: 13,
+    color: '#666666',
+    fontWeight: '500',
+  },
+  statusSection: {
+    marginBottom: 28,
+  },
+  statusSectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 18,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+  },
+  youStatusItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0f0f0f',
+    padding: 18,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  youStatusItemNoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+  },
+  youStatusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 16,
+  },
+  youStatusAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333333',
+  },
+  youStatusAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  youStatusAvatarEmoji: {
+    fontSize: 30,
+  },
+  youStatusInfo: {
+    flex: 1,
+  },
+  youStatusLabel: {
+    fontSize: 11,
+    color: '#888888',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '600',
+  },
+  youStatusName: {
+    fontSize: 19,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 3,
+    letterSpacing: 0.5,
+  },
+  youStatusUsername: {
+    fontSize: 14,
+    color: '#888888',
+    fontWeight: '500',
+  },
+  youStatusRight: {
+    marginLeft: 12,
+  },
+  youStatusBadge: {
+    // No background, border, or padding - just text
+  },
+  youStatusBadgePaid: {
+    // No background, border, or padding - just text
+  },
+  youStatusBadgeText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ff4444',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  youStatusBadgeTextPaid: {
+    color: '#4CAF50',
+  },
+  otherUsersSection: {
+    marginBottom: 24,
+  },
+  otherUsersTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 14,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+  },
+  otherUsersList: {
+    maxHeight: 280,
+  },
+  otherUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0f0f0f',
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  otherUserLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 12,
+  },
+  otherUserAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333333',
+  },
+  otherUserAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  otherUserAvatarEmoji: {
+    fontSize: 24,
+  },
+  otherUserInfo: {
+    flex: 1,
+  },
+  otherUserName: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 3,
+    letterSpacing: 0.3,
+  },
+  otherUserUsername: {
+    fontSize: 13,
+    color: '#888888',
+    fontWeight: '500',
+  },
+  otherUserRight: {
+    marginLeft: 12,
+  },
+  otherUserBadge: {
+    backgroundColor: '#2a1a1a',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#ff4444',
+  },
+  otherUserBadgePaid: {
+    backgroundColor: '#1a3a2a',
+    borderColor: '#4CAF50',
+  },
+  otherUserBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#ff4444',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  otherUserBadgeTextPaid: {
+    color: '#4CAF50',
+  },
+  punishmentParticipantsSection: {
+    marginTop: 8,
+  },
+  punishmentParticipantsTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 18,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  punishmentParticipantsList: {
+    maxHeight: 400,
+  },
+  punishmentParticipantItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  punishmentParticipantLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  punishmentParticipantAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333333',
+  },
+  punishmentParticipantAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  punishmentParticipantAvatarEmoji: {
+    fontSize: 24,
+  },
+  punishmentParticipantInfo: {
+    flex: 1,
+  },
+  punishmentParticipantName: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 3,
+    letterSpacing: 0.3,
+  },
+  punishmentParticipantUsername: {
+    fontSize: 13,
+    color: '#888888',
+    fontWeight: '500',
+  },
+  punishmentParticipantRight: {
+    marginLeft: 12,
+  },
+  punishmentStatusAccept: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ff4444',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  punishmentStatusAccepted: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4CAF50',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  punishmentStatusNotAccepted: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#888888',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  addUserSection: {
+    alignItems: 'center',
+    padding: 24,
+    marginBottom: 24,
+  },
+  addUserText: {
+    fontSize: 16,
+    color: '#888888',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 24,
+    fontWeight: '500',
+  },
+  addUserButton: {
+    backgroundColor: '#4CAF50',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 36,
+    borderRadius: 14,
+    gap: 10,
+    width: '100%',
+    shadowColor: '#4CAF50',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  addUserButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
+  },
+  addUserButtonTextOnly: {
+    paddingVertical: 8,
+  },
+  addUserButtonTextUnderlined: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#ffffff',
+    textDecorationLine: 'underline',
+    letterSpacing: 0.5,
+  },
+  paymentOverlayTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  participantsList: {
+    maxHeight: 300,
+    marginBottom: 20,
+  },
+  participantItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f0f0f',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  participantAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  participantAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  participantAvatarEmoji: {
+    fontSize: 24,
+  },
+  participantInfo: {
+    flex: 1,
+  },
+  participantName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  participantUsername: {
+    fontSize: 13,
+    color: '#888888',
+  },
+  paymentStatusBadge: {
+    backgroundColor: '#2a2a2a',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#444444',
+  },
+  paymentStatusBadgePaid: {
+    backgroundColor: '#1a3a2a',
+    borderColor: '#4CAF50',
+  },
+  paymentStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#888888',
+    textTransform: 'uppercase',
+  },
+  paymentStatusTextPaid: {
+    color: '#4CAF50',
+  },
+  paymentRequiredContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 40,
+    minHeight: 400,
+  },
+  paymentRequiredTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  paymentRequiredText: {
+    fontSize: 16,
+    color: '#888888',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 24,
+  },
+  payNowButton: {
+    backgroundColor: '#4CAF50',
+    paddingVertical: 18,
+    paddingHorizontal: 36,
+    borderRadius: 14,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    shadowColor: '#4CAF50',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  payNowButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+    letterSpacing: 0.5,
   },
 });
 

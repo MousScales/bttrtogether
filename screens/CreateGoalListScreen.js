@@ -30,6 +30,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
     consequenceType: '', // 'money' or 'punishment'
     consequence: '',
     amount: '',
+    friends: [], // Selected friends for group goals
   });
 
   const [currentGoal, setCurrentGoal] = useState('');
@@ -39,9 +40,14 @@ export default function CreateGoalListScreen({ navigation, route }) {
   const [endDate, setEndDate] = useState('');
   const [showDurationDropdown, setShowDurationDropdown] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [friendSearchQuery, setFriendSearchQuery] = useState('');
+  const [friendSearchResults, setFriendSearchResults] = useState([]);
+  const [searchingFriends, setSearchingFriends] = useState(false);
   const proceedAnim = useRef(new Animated.Value(0)).current;
   const addGoalButtonAnim = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
+  const addFriendsButtonAnim = useRef(new Animated.Value(0)).current;
+  const proceedFriendsAnim = useRef(new Animated.Value(0)).current;
 
   const getSquareCount = () => {
     if (isUnlimited) {
@@ -66,6 +72,44 @@ export default function CreateGoalListScreen({ navigation, route }) {
       }).start();
     }
   }, [goalListData.name]);
+
+  // Animate add friends button when amount is entered
+  useEffect(() => {
+    if (goalListData.amount && goalListData.amount.trim() !== '') {
+      Animated.spring(addFriendsButtonAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 7,
+      }).start();
+    } else {
+      Animated.timing(addFriendsButtonAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [goalListData.amount]);
+
+  // Animate proceed button on step 6 when friends are selected
+  useEffect(() => {
+    if (step === 6) {
+      if (goalListData.friends && goalListData.friends.length > 0) {
+        Animated.spring(proceedFriendsAnim, {
+          toValue: 1,
+          useNativeDriver: true,
+          tension: 50,
+          friction: 7,
+        }).start();
+      } else {
+        Animated.timing(proceedFriendsAnim, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true,
+        }).start();
+      }
+    }
+  }, [step, goalListData.friends]);
 
   useEffect(() => {
     if (step > 1) {
@@ -188,6 +232,47 @@ export default function CreateGoalListScreen({ navigation, route }) {
         throw goalsError;
       }
 
+      // For group goals, add participants (if any friends were added)
+      if (goalListData.type === 'group') {
+        // Add creator as participant (they need to pay too, but payment_status starts as 'pending')
+        const participants = [
+          { 
+            goal_list_id: goalList.id, 
+            user_id: user.id,
+            payment_status: 'pending' // Owner hasn't paid yet, just setting up
+          },
+        ];
+
+        // Add friends as participants if any were selected
+        if (goalListData.friends && goalListData.friends.length > 0) {
+          participants.push(
+            ...goalListData.friends.map(friend => ({
+              goal_list_id: goalList.id,
+              user_id: friend.id,
+              payment_status: 'pending'
+            }))
+          );
+        }
+
+        const { error: participantsError } = await supabase
+          .from('group_goal_participants')
+          .insert(participants);
+
+        if (participantsError) {
+          console.error('Error adding participants:', participantsError);
+          // Don't throw - goal list is already created
+        }
+
+        // Update goal list to require payment if consequence type is money
+        if (goalListData.consequenceType === 'money') {
+          await supabase
+            .from('goal_lists')
+            .update({ payment_required: true })
+            .eq('id', goalList.id)
+            .eq('user_id', user.id);
+        }
+      }
+
       setLoading(false);
       
       if (isOnboarding) {
@@ -218,6 +303,9 @@ export default function CreateGoalListScreen({ navigation, route }) {
           return goalListData.amount !== '';
         }
         return goalListData.consequence.trim() !== '';
+      case 6:
+        // Step 6 is for adding friends - can always proceed (skip is available)
+        return true;
       default:
         return false;
     }
@@ -534,59 +622,54 @@ export default function CreateGoalListScreen({ navigation, route }) {
           <View style={styles.stepContainer}>
             {goalListData.consequenceType === 'money' ? (
               <>
-                <Text style={[styles.stepTitle, styles.centeredTitle]}>Set Bet Amount</Text>
-                
-                <View style={styles.amountPerUserSection}>
-                  <Text style={styles.amountLabel}>Amount per person:</Text>
-                  <View style={styles.amountInputWrapper}>
-                    <Text style={styles.currencySymbol}>$</Text>
-                    <TextInput
-                      style={styles.amountInput}
-                      keyboardType="numeric"
-                      value={goalListData.amount}
-                      onChangeText={(text) => setGoalListData({ ...goalListData, amount: text })}
-                      textAlign="center"
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.paymentInfoSection}>
-                  <Text style={styles.paymentInfoLabel}>Payment Method</Text>
-                  <Text style={styles.paymentInfoSubtext}>
-                    Choose how you'll pay if you don't complete your goals
-                  </Text>
+                <View style={styles.centeredContent}>
+                  <Text style={[styles.stepTitle, styles.centeredTitle]}>Set Bet Amount</Text>
                   
-                  <View style={styles.paymentMethodGrid}>
-                    <TouchableOpacity style={[styles.paymentMethodButton, styles.applePayButton]}>
-                      <Ionicons name="logo-apple" size={32} color="#ffffff" />
-                      <Text style={styles.paymentMethodText}>Apple Pay</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={[styles.paymentMethodButton, styles.cashAppButton]}>
-                      <Text style={styles.cashAppIcon}>$</Text>
-                      <Text style={styles.paymentMethodText}>Cash App</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={[styles.paymentMethodButton, styles.paypalButton]}>
-                      <Ionicons name="logo-paypal" size={32} color="#ffffff" />
-                      <Text style={styles.paymentMethodText}>PayPal</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={[styles.paymentMethodButton, styles.cardButton]}>
-                      <Ionicons name="card" size={32} color="#5865F2" />
-                      <Text style={styles.paymentMethodText}>Add Card</Text>
-                    </TouchableOpacity>
+                  <View style={styles.amountPerUserSection}>
+                    <Text style={styles.amountLabel}>Amount per person:</Text>
+                    <View style={styles.amountInputWrapper}>
+                      <Text style={styles.currencySymbol}>$</Text>
+                      <TextInput
+                        style={styles.amountInput}
+                        keyboardType="numeric"
+                        value={goalListData.amount}
+                        onChangeText={(text) => setGoalListData({ ...goalListData, amount: text })}
+                        textAlign="center"
+                        placeholder="0.00"
+                        placeholderTextColor="#666666"
+                      />
+                    </View>
                   </View>
-
-                  {goalListData.amount && (
-                    <TouchableOpacity 
-                      style={styles.finalizeButton}
-                      onPress={handleComplete}
-                    >
-                      <Text style={styles.finalizeButtonText}>Finalize</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
+
+                {goalListData.amount && goalListData.amount.trim() !== '' && (
+                  <View style={styles.buttonWrapper}>
+                    <Animated.View
+                      style={[
+                        styles.proceedButtonBottom,
+                        {
+                          opacity: addFriendsButtonAnim,
+                          transform: [
+                            {
+                              translateY: addFriendsButtonAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [20, 0],
+                              }),
+                            },
+                          ],
+                        },
+                      ]}
+                    >
+                      <TouchableOpacity 
+                        style={styles.proceedButtonInner}
+                        onPress={handleNext}
+                      >
+                        <Text style={styles.proceedButtonText}>Proceed</Text>
+                        <Ionicons name="arrow-forward" size={16} color="#ffffff" />
+                      </TouchableOpacity>
+                    </Animated.View>
+                  </View>
+                )}
               </>
             ) : (
               <>
@@ -603,15 +686,173 @@ export default function CreateGoalListScreen({ navigation, route }) {
                 />
 
                 {goalListData.consequence.trim() !== '' && (
-                  <TouchableOpacity 
-                    style={styles.finalizeButton}
-                    onPress={handleComplete}
-                  >
-                    <Text style={styles.finalizeButtonText}>Finalize</Text>
-                  </TouchableOpacity>
+                  <View style={styles.buttonWrapper}>
+                    <TouchableOpacity 
+                      style={styles.proceedButtonBottom}
+                      onPress={handleNext}
+                    >
+                      <Text style={styles.proceedButtonText}>Proceed</Text>
+                      <Ionicons name="arrow-forward" size={16} color="#ffffff" />
+                    </TouchableOpacity>
+                  </View>
                 )}
               </>
             )}
+          </View>
+        );
+
+      case 6:
+        // Add Friends Step - Only for group goals
+        return (
+          <View style={styles.stepContainer}>
+            <View style={styles.centeredContent}>
+              <Text style={[styles.stepTitle, styles.centeredTitle]}>Add Friends</Text>
+              <Text style={styles.stepSubtitle}>
+                Add friends to join your challenge
+              </Text>
+            </View>
+
+            {/* Search Bar */}
+            <View style={styles.friendSearchContainer}>
+              <Ionicons name="search" size={20} color="#666666" style={styles.friendSearchIcon} />
+              <TextInput
+                style={styles.friendSearchInput}
+                placeholder="Search by username or name..."
+                placeholderTextColor="#666666"
+                value={friendSearchQuery}
+                onChangeText={setFriendSearchQuery}
+              />
+              {searchingFriends && (
+                <ActivityIndicator size="small" color="#ffffff" style={styles.friendSearchLoader} />
+              )}
+            </View>
+
+            {/* Search Results */}
+            {friendSearchResults.length > 0 && (
+              <ScrollView style={styles.friendSearchResults} showsVerticalScrollIndicator={false}>
+                {friendSearchResults.map((user) => {
+                  const isSelected = goalListData.friends?.some(f => f.id === user.id);
+                  return (
+                    <TouchableOpacity
+                      key={user.id}
+                      style={[
+                        styles.friendSearchResultItem,
+                        isSelected && styles.friendSearchResultItemSelected
+                      ]}
+                      onPress={() => toggleFriendSelection(user)}
+                    >
+                      <View style={styles.friendSearchResultAvatar}>
+                        {user.avatar_url ? (
+                          <Image
+                            source={{ uri: user.avatar_url }}
+                            style={styles.friendSearchResultAvatarImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="person" size={24} color="#666666" />
+                        )}
+                      </View>
+                      <View style={styles.friendSearchResultInfo}>
+                        <Text style={styles.friendSearchResultName}>{user.name || 'User'}</Text>
+                        <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
+                      </View>
+                      {isSelected ? (
+                        <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                      ) : (
+                        <Ionicons name="add-circle-outline" size={28} color="#666666" />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            {/* Friends List */}
+            <View style={styles.friendsListContainer}>
+              {goalListData.friends && goalListData.friends.length > 0 ? (
+                <ScrollView style={styles.friendsList} showsVerticalScrollIndicator={false}>
+                  {goalListData.friends.map((friend) => (
+                    <View key={friend.id} style={styles.friendListItem}>
+                      <View style={styles.friendListAvatar}>
+                        {friend.avatar_url ? (
+                          <Image
+                            source={{ uri: friend.avatar_url }}
+                            style={styles.friendListAvatarImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="person" size={20} color="#666666" />
+                        )}
+                      </View>
+                      <View style={styles.friendListInfo}>
+                        <Text style={styles.friendListName}>{friend.name || 'User'}</Text>
+                        <Text style={styles.friendListUsername}>@{friend.username || 'username'}</Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={() => {
+                          const updatedFriends = goalListData.friends.filter(f => f.id !== friend.id);
+                          setGoalListData({ ...goalListData, friends: updatedFriends });
+                        }}
+                        style={styles.removeFriendButton}
+                      >
+                        <Ionicons name="close-circle" size={24} color="#ff4444" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : (
+                <View style={styles.noFriendsContainer}>
+                  <Ionicons name="people-outline" size={48} color="#444444" />
+                  <Text style={styles.noFriendsText}>No friends</Text>
+                </View>
+              )}
+            </View>
+            
+            {/* Skip or Proceed Button */}
+            <View style={styles.buttonWrapper}>
+              {goalListData.friends && goalListData.friends.length > 0 ? (
+                <Animated.View
+                  style={[
+                    styles.proceedButtonBottom,
+                    {
+                      opacity: proceedFriendsAnim,
+                      transform: [
+                        {
+                          translateY: proceedFriendsAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [20, 0],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                >
+                  <TouchableOpacity 
+                    style={styles.proceedButtonInner}
+                    onPress={() => {
+                      // Proceed to complete
+                      handleComplete();
+                    }}
+                  >
+                    <Text style={styles.proceedButtonText}>Proceed</Text>
+                    <Ionicons name="arrow-forward" size={16} color="#ffffff" />
+                  </TouchableOpacity>
+                </Animated.View>
+              ) : (
+                <View style={styles.proceedButtonBottom}>
+                  <TouchableOpacity 
+                    style={styles.proceedButtonInner}
+                    onPress={() => {
+                      // Skip adding friends - can add later
+                      setGoalListData({ ...goalListData, friends: goalListData.friends || [] });
+                      handleComplete();
+                    }}
+                  >
+                    <Text style={styles.proceedButtonText}>Add Friends Later</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           </View>
         );
 
@@ -650,7 +891,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
             },
           ]}
         >
-          {(goalListData.type === 'personal' ? [1, 2, 3] : [1, 2, 3, 4, 5]).map((num) => (
+          {(goalListData.type === 'personal' ? [1, 2, 3] : [1, 2, 3, 4, 5, 6]).map((num) => (
             <View
               key={num}
               style={[
@@ -760,6 +1001,138 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     color: '#888888',
     marginBottom: 32,
+    textAlign: 'center',
+  },
+  friendsListContainer: {
+    flex: 1,
+    width: '100%',
+    paddingHorizontal: 20,
+    marginTop: 20,
+  },
+  friendsList: {
+    flexGrow: 1,
+  },
+  friendListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  friendListAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  friendListAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  friendListInfo: {
+    flex: 1,
+  },
+  friendListName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+  friendListUsername: {
+    fontSize: 14,
+    color: '#888888',
+  },
+  removeFriendButton: {
+    padding: 4,
+  },
+  noFriendsContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  noFriendsText: {
+    fontSize: 18,
+    fontWeight: '400',
+    color: '#666666',
+    marginTop: 16,
+  },
+  friendSearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginHorizontal: 20,
+    marginTop: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  friendSearchIcon: {
+    marginRight: 12,
+  },
+  friendSearchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#ffffff',
+  },
+  friendSearchLoader: {
+    marginLeft: 12,
+  },
+  friendSearchResults: {
+    maxHeight: 200,
+    marginHorizontal: 20,
+    marginBottom: 16,
+  },
+  friendSearchResultItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  friendSearchResultItemSelected: {
+    borderColor: '#4CAF50',
+    backgroundColor: '#1a2a1a',
+  },
+  friendSearchResultAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  friendSearchResultAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  friendSearchResultInfo: {
+    flex: 1,
+  },
+  friendSearchResultName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  friendSearchResultUsername: {
+    fontSize: 13,
+    color: '#888888',
   },
   centeredInput: {
     textAlign: 'center',
@@ -903,12 +1276,22 @@ const styles = StyleSheet.create({
   },
   proceedButtonBottom: {
     position: 'absolute',
-    bottom: 20,
+    bottom: 40,
     right: 20,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingVertical: 8,
+  },
+  buttonWrapper: {
+    position: 'absolute',
+    bottom: -100,
+    right: 20,
+  },
+  personalButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
   },
   datePickerModalOverlay: {
     flex: 1,
@@ -985,9 +1368,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#0a0a0a',
     borderRadius: 100,
   },
+  centeredContent: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginTop: 40,
+  },
   amountPerUserSection: {
     alignItems: 'center',
-    marginBottom: 40,
+    marginTop: 40,
   },
   amountLabel: {
     fontSize: 16,
@@ -1092,16 +1480,29 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     marginBottom: 24,
   },
-  finalizeButton: {
-    alignItems: 'center',
-    paddingVertical: 20,
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 12,
     marginTop: 24,
   },
+  finalizeButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderRadius: 12,
+    backgroundColor: '#4CAF50',
+    flexDirection: 'row',
+  },
+  skipButton: {
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#444444',
+  },
   finalizeButtonText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
     color: '#ffffff',
-    textDecorationLine: 'underline',
     letterSpacing: 0.5,
   },
   optionCard: {
