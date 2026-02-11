@@ -242,26 +242,50 @@ export default function ProfileScreen({ navigation }) {
       if (!user) return;
 
       setLoadingRequests(true);
-      const { data, error } = await supabase
+      // First, get the friend requests
+      const { data: requests, error: requestsError } = await supabase
         .from('friend_requests')
-        .select(`
-          id,
-          requester_id,
-          recipient_id,
-          status,
-          created_at,
-          requester:profiles!friend_requests_requester_id_fkey(id, name, username, avatar_url)
-        `)
+        .select('id, requester_id, recipient_id, status, created_at')
         .eq('recipient_id', user.id)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Error loading friend requests:', error);
+      if (requestsError) {
+        console.error('Error loading friend requests:', requestsError);
         setFriendRequests([]);
-      } else {
-        setFriendRequests(data || []);
+        return;
       }
+
+      if (!requests || requests.length === 0) {
+        setFriendRequests([]);
+        return;
+      }
+
+      // Get all requester IDs
+      const requesterIds = requests.map(r => r.requester_id);
+
+      // Fetch profiles for all requesters
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .in('id', requesterIds);
+
+      if (profilesError) {
+        console.error('Error loading requester profiles:', profilesError);
+        setFriendRequests([]);
+        return;
+      }
+
+      // Combine requests with profiles
+      const requestsWithProfiles = requests.map(request => {
+        const requesterProfile = profiles?.find(p => p.id === request.requester_id);
+        return {
+          ...request,
+          requester: requesterProfile || null,
+        };
+      });
+
+      setFriendRequests(requestsWithProfiles);
     } catch (error) {
       console.error('Error loading friend requests:', error);
       setFriendRequests([]);
