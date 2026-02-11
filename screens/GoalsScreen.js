@@ -276,17 +276,17 @@ export default function GoalsScreen({ navigation }) {
           } else if (existingRequest.status === 'accepted') {
             Alert.alert('Info', 'You are already friends!');
           } else {
-            // Request was declined, create a new one
+            // Request was declined, update it back to pending
             const { error } = await supabase
               .from('friend_requests')
-              .insert({
-                requester_id: currentUser.id,
-                recipient_id: friend.id,
+              .update({
                 status: 'pending',
-              });
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', existingRequest.id);
 
             if (error) {
-              console.error('Error sending friend request:', error);
+              console.error('Error resending friend request:', error);
               Alert.alert('Error', 'Failed to send friend request');
             } else {
               Alert.alert('Success', 'Friend request sent! They will see it in their profile.');

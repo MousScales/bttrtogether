@@ -379,8 +379,24 @@ export default function ProfileScreen({ navigation }) {
       if (existingRequest) {
         if (existingRequest.status === 'pending') {
           Alert.alert('Friend Request', 'Friend request already sent!');
+        } else if (existingRequest.status === 'accepted') {
+          Alert.alert('Info', 'You are already friends!');
         } else {
-          Alert.alert('Info', 'Friend request was previously declined');
+          // Request was declined, update it back to pending
+          const { error } = await supabase
+            .from('friend_requests')
+            .update({
+              status: 'pending',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existingRequest.id);
+
+          if (error) {
+            console.error('Error resending friend request:', error);
+            Alert.alert('Error', 'Failed to send friend request');
+          } else {
+            Alert.alert('Success', 'Friend request sent!');
+          }
         }
       } else {
         // Send new friend request
