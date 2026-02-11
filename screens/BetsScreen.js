@@ -1,7 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View, FlatList, Dimensions, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
 import Svg, {
   Circle,
   Line,
@@ -70,7 +69,6 @@ function getWindingPathPositions(count, contentWidth, contentHeight) {
 }
 
 function MonthTrail({ monthIndex, monthName, year, contentHeight }) {
-  const navigation = useNavigation();
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
@@ -92,9 +90,10 @@ function MonthTrail({ monthIndex, monthName, year, contentHeight }) {
 
   const handleDayPress = useCallback(
     (day) => {
-      navigation.navigate('DayDetail', { year, monthIndex, day });
+      // TODO: Add DayDetail screen navigation
+      console.log('Day pressed:', { year, monthIndex, day });
     },
-    [navigation, year, monthIndex]
+    [year, monthIndex]
   );
 
   return (

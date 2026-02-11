@@ -1,591 +1,1052 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  ActivityIndicator,
   Modal,
-  Pressable,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
+import { useFocusEffect } from '@react-navigation/native';
+import React from 'react';
 
-const ACCENT = '#007AFF';
-const BG = '#F5F5F5';
-const CARD = '#fff';
-const TEXT = '#333';
-const MUTED = '#666';
+export default function ProfileScreen({ navigation }) {
+  const [profile, setProfile] = useState(null);
+  const [goalLists, setGoalLists] = useState([]);
+  const [goals, setGoals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [friendSearchModalVisible, setFriendSearchModalVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [addingFriend, setAddingFriend] = useState(null);
 
-export default function ProfileScreen() {
-  const [profile, setProfile] = useState({
-    name: 'Phill',
-    handle: '@bttrtogether',
-    bio: 'Showing up daily — better together.',
-    accountabilityCode: 'BTTR-4821',
-  });
+  // Load profile and goals data
+  const loadProfileData = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
 
-  const [prefs, setPrefs] = useState({
-    reminders: true,
-    friendNudges: true,
-    weeklyRecap: false,
-  });
+      // Load profile
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [draft, setDraft] = useState(profile);
+      if (profileError && profileError.code !== 'PGRST116') {
+        console.error('Error loading profile:', profileError);
+      } else {
+        setProfile(profileData || { name: '', username: '', avatar_url: null });
+      }
 
-  const buddies = useMemo(
-    () => [
-      { id: 1, name: 'Sarah M.', status: 'On a 5-day streak', avatar: '👩' },
-      { id: 2, name: 'Mike R.', status: 'Checked in today', avatar: '👨' },
-      { id: 3, name: 'Emma L.', status: '2 goals completed', avatar: '👧' },
-    ],
-    []
-  );
+      // Load goal lists
+      const { data: listsData, error: listsError } = await supabase
+        .from('goal_lists')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
 
-  const stats = useMemo(
-    () => [
-      { label: 'Streak', value: '5d' },
-      { label: 'Today', value: '3/5' },
-      { label: 'Bets', value: '2' },
-    ],
-    []
-  );
+      if (listsError) {
+        console.error('Error loading goal lists:', listsError);
+      } else {
+        setGoalLists(listsData || []);
+      }
 
-  const openEdit = () => {
-    setDraft(profile);
-    setEditOpen(true);
+      // Load all goals
+      const { data: goalsData, error: goalsError } = await supabase
+        .from('goals')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: true });
+
+      if (goalsError) {
+        console.error('Error loading goals:', goalsError);
+      } else {
+        setGoals(goalsData || []);
+      }
+
+      setLoading(false);
+    } catch (error) {
+      console.error('Error loading profile data:', error);
+      setLoading(false);
+    }
   };
 
-  const saveEdit = () => {
-    const name = (draft.name || '').trim();
-    const handle = (draft.handle || '').trim();
+  useEffect(() => {
+    loadProfileData();
+  }, []);
 
-    if (!name) {
-      Alert.alert('Name required', 'Add a name to save your profile.');
+  // Reload when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      loadProfileData();
+    }, [])
+  );
+
+  // Search for users
+  const searchUsers = async (query) => {
+    if (!query.trim()) {
+      setSearchResults([]);
       return;
     }
-    if (!handle.startsWith('@')) {
-      Alert.alert('Handle format', 'Your handle should start with "@".');
-      return;
-    }
 
-    setProfile({
-      ...profile,
-      name,
-      handle,
-      bio: (draft.bio || '').trim(),
+    setSearching(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Search profiles by username or name
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .or(`username.ilike.%${query}%,name.ilike.%${query}%`)
+        .neq('id', user.id) // Exclude current user
+        .limit(20);
+
+      if (error) {
+        console.error('Error searching users:', error);
+        Alert.alert('Error', 'Failed to search users');
+      } else {
+        setSearchResults(data || []);
+      }
+    } catch (error) {
+      console.error('Error searching users:', error);
+      Alert.alert('Error', 'Failed to search users');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Handle search input change with debounce
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (searchQuery.trim()) {
+        searchUsers(searchQuery);
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  // Add friend
+  const handleAddFriend = async (friendId) => {
+    setAddingFriend(friendId);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // For now, we'll just show an alert since we need to create a friends table
+      // TODO: Create friends table in Supabase and implement friend requests
+      Alert.alert(
+        'Friend Request',
+        'Friend request functionality will be available soon!',
+        [{ text: 'OK' }]
+      );
+
+      // Future implementation:
+      // const { error } = await supabase
+      //   .from('friends')
+      //   .insert({
+      //     user_id: user.id,
+      //     friend_id: friendId,
+      //     status: 'pending'
+      //   });
+      
+    } catch (error) {
+      console.error('Error adding friend:', error);
+      Alert.alert('Error', 'Failed to add friend');
+    } finally {
+      setAddingFriend(null);
+    }
+  };
+
+  const goalCategories = useMemo(() => {
+    return goalLists.map(list => ({
+      id: list.id,
+      name: list.name,
+      color: list.type === 'personal' ? '#4CAF50' : '#2196F3',
+      icon: list.type === 'personal' ? 'person' : 'people',
+      members: [],
+      countdown: null,
+      type: list.type,
+    }));
+  }, [goalLists]);
+
+  // Generate completion history helper
+  const generateHistory = (goalCreatedAt) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const createdDate = new Date(goalCreatedAt);
+    createdDate.setHours(0, 0, 0, 0);
+    const daysSinceCreation = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
+    const totalDays = 28;
+    
+    return Array.from({ length: totalDays }, (_, index) => {
+      if (index < daysSinceCreation) return false;
+      if (index === daysSinceCreation) return null;
+      return null;
     });
-    setEditOpen(false);
   };
 
-  const shareCode = () => {
-    Alert.alert('Invite code', `Share this code with a friend:\n\n${profile.accountabilityCode}`);
+  const getCurrentDayIndex = (goalCreatedAt) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const createdDate = new Date(goalCreatedAt);
+    createdDate.setHours(0, 0, 0, 0);
+    return Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
   };
 
-  const signOut = () => {
-    Alert.alert('Sign out', 'This is a UI placeholder for now.');
+  const getRandomColor = () => {
+    const colors = ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0', '#F44336'];
+    return colors[Math.floor(Math.random() * colors.length)];
   };
+
+  const myGoals = useMemo(() => {
+    return goals.map(goal => {
+      const history = generateHistory(goal.created_at);
+      const currentDayIndex = getCurrentDayIndex(goal.created_at);
+      history[currentDayIndex] = goal.completed;
+      
+      return {
+        id: goal.id,
+        title: goal.title,
+        checked: goal.completed,
+        completionHistory: history,
+        color: goal.color || getRandomColor(),
+        currentDayIndex: currentDayIndex,
+      };
+    });
+  }, [goals]);
+
+  const friends = useMemo(() => [], []); // Empty for now
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['bottom']}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#ffffff" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        {/* Header card */}
-        <View style={[styles.card, styles.headerCard]}>
-          <View style={styles.headerRow}>
-            <View style={styles.avatarWrap}>
+        {/* Header Section */}
+        <View style={styles.headerSection}>
+          {/* Top Icons */}
+          <View style={styles.topIcons}>
+            <View style={styles.spacer} />
+            <View style={styles.topRight}>
+              <TouchableOpacity style={styles.iconButton}>
+                <Ionicons name="share-outline" size={24} color="#ffffff" />
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.iconButton}
+                onPress={() => {
+                  setFriendSearchModalVisible(true);
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+              >
+                <Ionicons name="person-add-outline" size={24} color="#ffffff" />
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.iconButton}
+                onPress={() => navigation.navigate('Settings')}
+              >
+                <Ionicons name="settings-outline" size={24} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Profile Avatar */}
+          <View style={styles.avatarContainer}>
+            {profile?.avatar_url ? (
               <Image
-                source={require('../assets/fsf.png')}
-                style={styles.avatarImage}
+                source={{ uri: profile.avatar_url }}
+                style={styles.avatar}
                 resizeMode="cover"
               />
-            </View>
-
-            <View style={styles.headerText}>
-              <Text style={styles.name}>{profile.name}</Text>
-              <Text style={styles.handle}>{profile.handle}</Text>
-              <Text style={styles.bio} numberOfLines={2}>
-                {profile.bio}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.headerActions}>
-            <TouchableOpacity
-              style={[styles.button, styles.primary, styles.buttonSpacer]}
-              onPress={openEdit}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.buttonText, styles.primaryText]}>Edit profile</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.button, styles.secondary]} onPress={shareCode} activeOpacity={0.8}>
-              <Text style={[styles.buttonText, styles.secondaryText]}>Share code</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Stats */}
-        <View style={styles.statsRow}>
-          {stats.map((s, idx) => (
-            <View
-              key={s.label}
-              style={[styles.card, styles.statCard, idx !== stats.length - 1 && styles.statSpacer]}
-            >
-              <Text style={styles.statValue}>{s.value}</Text>
-              <Text style={styles.statLabel}>{s.label}</Text>
-            </View>
-          ))}
-        </View>
-
-        {/* Buddies */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Accountability buddies</Text>
-          <TouchableOpacity
-            onPress={() => Alert.alert('Coming soon', 'Add buddies will plug into your friend system.')}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.sectionAction}>Add</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.card}>
-          {buddies.map((b, idx) => (
-            <View key={b.id} style={[styles.rowItem, idx !== 0 && styles.rowItemBorder]}>
-              <View style={styles.rowLeft}>
-                <View style={styles.emojiAvatar}>
-                  <Text style={styles.emojiAvatarText}>{b.avatar}</Text>
-                </View>
-                <View style={styles.rowText}>
-                  <Text style={styles.rowTitle}>{b.name}</Text>
-                  <Text style={styles.rowSub}>{b.status}</Text>
-                </View>
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Ionicons name="person" size={40} color="#666666" />
               </View>
-              <Text style={styles.chev}>›</Text>
+            )}
+          </View>
+
+          {/* Name and Handle */}
+          <Text style={styles.name}>{profile?.name || 'User'}</Text>
+          <Text style={styles.handle}>@{profile?.username || 'username'}</Text>
+
+          {/* Stats Badges */}
+          <View style={styles.badgesRow}>
+            <View style={styles.badge}>
+              <Ionicons name="calendar-outline" size={16} color="#ffffff" />
+              <Text style={styles.badgeText}>Feb 10</Text>
             </View>
-          ))}
+            <View style={styles.badge}>
+              <Ionicons name="flame" size={16} color="#FF6B35" />
+              <Text style={styles.badgeText}>5 Day Streak</Text>
+            </View>
+            <View style={styles.badge}>
+              <Ionicons name="trophy-outline" size={16} color="#FFD700" />
+              <Text style={styles.badgeText}>Level 3</Text>
+            </View>
+          </View>
         </View>
 
-        {/* Preferences */}
-        <Text style={styles.sectionTitleStandalone}>Preferences</Text>
-        <View style={styles.card}>
-          <PrefRow
-            title="Daily reminders"
-            subtitle="Get a nudge to check in"
-            value={prefs.reminders}
-            onChange={(v) => setPrefs((p) => ({ ...p, reminders: v }))}
-          />
-          <PrefRow
-            title="Friend nudges"
-            subtitle="Let buddies encourage you"
-            value={prefs.friendNudges}
-            onChange={(v) => setPrefs((p) => ({ ...p, friendNudges: v }))}
-          />
-          <PrefRow
-            title="Weekly recap"
-            subtitle="A quick progress summary"
-            value={prefs.weeklyRecap}
-            onChange={(v) => setPrefs((p) => ({ ...p, weeklyRecap: v }))}
-          />
-        </View>
+        {/* Goal Categories Section */}
+        {goalCategories.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Goal Lists</Text>
+            <View style={styles.groupsList}>
+              {goalCategories.map((category) => (
+                <TouchableOpacity key={category.id} style={styles.groupCard}>
+                  <View style={styles.groupLeft}>
+                    <View style={[styles.groupIcon, { backgroundColor: category.color }]}>
+                      <Ionicons name={category.icon} size={24} color="#ffffff" />
+                    </View>
+                    <View style={styles.groupInfo}>
+                      <Text style={styles.groupTitle}>{category.name}</Text>
+                    </View>
+                  </View>
+                  {category.countdown && (
+                    <View style={styles.countdownBadge}>
+                      <Text style={styles.countdownText}>{category.countdown}</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
 
-        {/* Help / account */}
-        <Text style={styles.sectionTitleStandalone}>Account</Text>
-        <View style={styles.card}>
-          <ActionRow
-            title="Support"
-            subtitle="Get help or report a bug"
-            onPress={() => Alert.alert('Support', 'Wire this up to email or a help center.')}
-          />
-          <ActionRow
-            title="Privacy"
-            subtitle="Manage what friends can see"
-            onPress={() => Alert.alert('Privacy', 'Privacy controls coming soon.')}
-          />
-          <ActionRow title="Sign out" danger subtitle="Placeholder" onPress={signOut} />
-        </View>
+        {/* My Goals Section */}
+        {myGoals.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>My Goals</Text>
+            
+            <View style={styles.goalsList}>
+              {myGoals.map((goal) => (
+                <View key={goal.id} style={styles.goalCard}>
+                  <View style={styles.goalPillWrapper}>
+                    <Text style={styles.goalTitleText}>{goal.title}</Text>
+                  </View>
+                  
+                  {/* Completion History Grid - Carousel with 3 rows */}
+                  {goal.completionHistory && (() => {
+                    const totalBoxes = goal.completionHistory.length;
+                    const numRows = 3; // Always 3 rows
+                    const boxesPerColumn = numRows; // 3 boxes per column
+                    const numColumns = Math.ceil(totalBoxes / boxesPerColumn);
+                    
+                    // Organize into columns (each column has 3 boxes stacked)
+                    const columns = [];
+                    for (let col = 0; col < numColumns; col++) {
+                      const columnBoxes = [];
+                      for (let row = 0; row < numRows; row++) {
+                        const originalIndex = col * numRows + row;
+                        if (originalIndex < totalBoxes) {
+                          columnBoxes.push({
+                            status: goal.completionHistory[originalIndex],
+                            originalIndex: originalIndex
+                          });
+                        }
+                      }
+                      if (columnBoxes.length > 0) {
+                        columns.push(columnBoxes);
+                      }
+                    }
+                    
+                    return (
+                      <ScrollView 
+                        horizontal 
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.historyCarouselContainer}
+                        style={styles.historyCarousel}
+                      >
+                        {columns.map((columnBoxes, colIndex) => (
+                          <View key={colIndex} style={styles.historyColumn}>
+                            {columnBoxes.map((box) => {
+                              const isToday = box.originalIndex === goal.currentDayIndex;
+                              const isFuture = box.originalIndex > goal.currentDayIndex;
+                              const isCompleted = box.status === true;
+                              
+                              return (
+                                <View 
+                                  key={box.originalIndex} 
+                                  style={[
+                                    styles.historySquare,
+                                    isFuture 
+                                      ? styles.historySquareFuture
+                                      : isCompleted 
+                                        ? { backgroundColor: goal.color || '#4CAF50' }
+                                        : styles.historySquareIncomplete,
+                                    isToday && styles.historySquareToday
+                                  ]} 
+                                />
+                              );
+                            })}
+                          </View>
+                        ))}
+                      </ScrollView>
+                    );
+                  })()}
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
 
-        <Text style={styles.footer}>bttrTogether</Text>
+        {/* Friends Section */}
+        {friends.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitleLarge}>Friends</Text>
+            
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.friendsScroll}
+            >
+              {friends.map((friend) => (
+                <TouchableOpacity key={friend.id} style={styles.friendCard}>
+                  <View style={styles.friendCardAvatar}>
+                    <Text style={styles.friendCardEmoji}>{friend.avatar}</Text>
+                  </View>
+                  <Text style={styles.friendCardName}>{friend.name}</Text>
+                  <Text style={styles.friendCardHandle}>{friend.handle}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
       </ScrollView>
 
-      {/* Edit modal */}
-      <Modal visible={editOpen} animationType="slide" transparent onRequestClose={() => setEditOpen(false)}>
-        <Pressable style={styles.modalOverlay} onPress={() => setEditOpen(false)}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
+      {/* Friend Search Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={friendSearchModalVisible}
+        onRequestClose={() => setFriendSearchModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            {/* Modal Header */}
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Edit profile</Text>
-              <TouchableOpacity onPress={() => setEditOpen(false)} style={styles.closeButton} activeOpacity={0.7}>
-                <Text style={styles.closeButtonText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Field
-              label="Name"
-              value={draft.name}
-              onChangeText={(t) => setDraft((d) => ({ ...d, name: t }))}
-              placeholder="Your name"
-            />
-            <Field
-              label="Handle"
-              value={draft.handle}
-              onChangeText={(t) => setDraft((d) => ({ ...d, handle: t }))}
-              placeholder="@handle"
-              autoCapitalize="none"
-            />
-            <Field
-              label="Bio"
-              value={draft.bio}
-              onChangeText={(t) => setDraft((d) => ({ ...d, bio: t }))}
-              placeholder="A short line about you"
-              multiline
-            />
-
-            <View style={styles.modalActions}>
+              <View style={styles.modalHeaderLeft}>
+                <Ionicons name="people" size={24} color="#ffffff" style={styles.modalHeaderIcon} />
+                <Text style={styles.modalTitle}>Find Friends</Text>
+              </View>
               <TouchableOpacity
-                style={[styles.button, styles.secondary, styles.modalButton, styles.buttonSpacer]}
-                onPress={() => setEditOpen(false)}
+                onPress={() => {
+                  setFriendSearchModalVisible(false);
+                  setSearchQuery('');
+                  setSearchResults([]);
+                }}
+                style={styles.closeButton}
               >
-                <Text style={[styles.buttonText, styles.secondaryText]}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.button, styles.primary, styles.modalButton]} onPress={saveEdit}>
-                <Text style={[styles.buttonText, styles.primaryText]}>Save</Text>
+                <Ionicons name="close" size={24} color="#ffffff" />
               </TouchableOpacity>
             </View>
-          </Pressable>
-        </Pressable>
+
+            {/* Search Input - Prominent */}
+            <View style={styles.searchContainerLarge}>
+              <Ionicons name="search" size={22} color="#888888" style={styles.searchIcon} />
+              <TextInput
+                style={styles.searchInputLarge}
+                placeholder="Search by username or name..."
+                placeholderTextColor="#666666"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoFocus
+              />
+              {searching && (
+                <ActivityIndicator size="small" color="#4CAF50" style={styles.searchLoader} />
+              )}
+              {searchQuery.trim() && !searching && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  }}
+                  style={styles.clearButton}
+                >
+                  <Ionicons name="close-circle" size={20} color="#666666" />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Search Results or Empty State */}
+            <ScrollView style={styles.searchResultsContainer}>
+              {!searchQuery.trim() && (
+                <View style={styles.emptySearchContainer}>
+                  <Ionicons name="search-outline" size={64} color="#333333" />
+                  <Text style={styles.emptySearchTitle}>Search for friends</Text>
+                  <Text style={styles.emptySearchText}>
+                    Enter a username or name to find people to connect with
+                  </Text>
+                </View>
+              )}
+              {searchResults.length === 0 && searchQuery.trim() && !searching && (
+                <View style={styles.noResultsContainer}>
+                  <Ionicons name="person-outline" size={48} color="#333333" />
+                  <Text style={styles.noResultsText}>No users found</Text>
+                  <Text style={styles.noResultsSubtext}>
+                    Try searching with a different username or name
+                  </Text>
+                </View>
+              )}
+              {searchResults.map((user) => (
+                <TouchableOpacity
+                  key={user.id}
+                  style={styles.searchResultItem}
+                  onPress={() => handleAddFriend(user.id)}
+                  disabled={addingFriend === user.id}
+                >
+                  <View style={styles.searchResultAvatar}>
+                    {user.avatar_url ? (
+                      <Image
+                        source={{ uri: user.avatar_url }}
+                        style={styles.searchResultAvatarImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={24} color="#666666" />
+                    )}
+                  </View>
+                  <View style={styles.searchResultInfo}>
+                    <Text style={styles.searchResultName}>{user.name || 'User'}</Text>
+                    <Text style={styles.searchResultUsername}>@{user.username || 'username'}</Text>
+                  </View>
+                  {addingFriend === user.id ? (
+                    <ActivityIndicator size="small" color="#4CAF50" />
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.addFriendButton}
+                      onPress={() => handleAddFriend(user.id)}
+                    >
+                      <Ionicons name="person-add" size={22} color="#4CAF50" />
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
-  );
-}
-
-function PrefRow({ title, subtitle, value, onChange }) {
-  return (
-    <View style={styles.prefRow}>
-      <View style={styles.prefText}>
-        <Text style={styles.rowTitle}>{title}</Text>
-        <Text style={styles.rowSub}>{subtitle}</Text>
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        trackColor={{ false: '#D1D1D6', true: '#B9DBFF' }}
-        thumbColor={value ? ACCENT : '#f4f3f4'}
-      />
-    </View>
-  );
-}
-
-function ActionRow({ title, subtitle, onPress, danger }) {
-  return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={styles.actionRow}>
-      <View style={styles.rowText}>
-        <Text style={[styles.rowTitle, danger && styles.danger]}>{title}</Text>
-        {!!subtitle && <Text style={styles.rowSub}>{subtitle}</Text>}
-      </View>
-      <Text style={styles.chev}>›</Text>
-    </TouchableOpacity>
-  );
-}
-
-function Field({ label, value, onChangeText, placeholder, multiline, autoCapitalize }) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        multiline={multiline}
-        autoCapitalize={autoCapitalize}
-        style={[styles.input, multiline && styles.inputMultiline]}
-        placeholderTextColor="#999"
-      />
-    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: BG,
+    backgroundColor: '#000000',
   },
   container: {
     flex: 1,
-    backgroundColor: BG,
+    backgroundColor: '#000000',
   },
   content: {
-    padding: 16,
     paddingBottom: 32,
   },
-  card: {
-    backgroundColor: CARD,
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 3,
-  },
-  headerCard: {
-    padding: 16,
-  },
-  headerRow: {
-    flexDirection: 'row',
+  headerSection: {
     alignItems: 'center',
+    paddingTop: 60,
+    paddingBottom: 24,
+    backgroundColor: '#0a0a0a',
   },
-  avatarWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+  topIcons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: 16,
+    marginBottom: 20,
+  },
+  spacer: {
+    width: 44,
+  },
+  topRight: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#1a1a1a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     overflow: 'hidden',
-    backgroundColor: '#F0F0F0',
-    marginRight: 14,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 3,
+    borderColor: '#333333',
+    marginBottom: 12,
   },
-  avatarImage: {
+  avatar: {
     width: '100%',
     height: '100%',
   },
-  headerText: {
+  avatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2a2a2a',
+  },
+  loadingContainer: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000000',
   },
   name: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: TEXT,
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
   },
   handle: {
-    marginTop: 2,
-    fontSize: 14,
-    fontWeight: '600',
-    color: MUTED,
+    fontSize: 16,
+    fontWeight: '400',
+    color: '#888888',
+    marginBottom: 20,
   },
-  bio: {
-    marginTop: 6,
-    fontSize: 14,
-    color: TEXT,
-    lineHeight: 18,
-  },
-  headerActions: {
+  actionButtons: {
     flexDirection: 'row',
-    marginTop: 14,
+    gap: 12,
+    paddingHorizontal: 16,
+    width: '100%',
+    marginBottom: 16,
   },
-  buttonSpacer: {
-    marginRight: 10,
-  },
-  button: {
+  actionButton: {
     flex: 1,
-    height: 44,
-    borderRadius: 12,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buttonText: {
-    fontSize: 15,
-    fontWeight: '700',
+  primaryButton: {
+    backgroundColor: '#ffffff',
   },
-  primary: {
-    backgroundColor: ACCENT,
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
   },
-  primaryText: {
-    color: '#fff',
+  secondaryButton: {
+    backgroundColor: '#2a2a2a',
+    borderWidth: 1,
+    borderColor: '#444444',
   },
-  secondary: {
-    backgroundColor: '#EEF6FF',
+  secondaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
   },
-  secondaryText: {
-    color: ACCENT,
-  },
-  statsRow: {
+  badgesRow: {
     flexDirection: 'row',
-    marginTop: 12,
-    marginBottom: 6,
+    gap: 8,
+    paddingHorizontal: 16,
   },
-  statSpacer: {
-    marginRight: 10,
-  },
-  statCard: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 14,
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: TEXT,
-  },
-  statLabel: {
-    marginTop: 4,
-    fontSize: 12,
-    fontWeight: '700',
-    color: MUTED,
-  },
-  sectionHeader: {
-    marginTop: 18,
-    marginBottom: 10,
-    paddingHorizontal: 4,
+  badge: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  badgeText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#ffffff',
+  },
+  section: {
+    marginTop: 8,
+    paddingVertical: 16,
+    borderBottomWidth: 8,
+    borderBottomColor: '#0a0a0a',
+  },
+  groupsList: {
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  groupCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  groupLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 12,
+  },
+  groupIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  groupInfo: {
+    flex: 1,
+  },
+  groupTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  groupSubtitle: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#888888',
+  },
+  membersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  memberAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#2a2a2a',
+    borderWidth: 2,
+    borderColor: '#1a1a1a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memberEmoji: {
+    fontSize: 12,
+  },
+  countdownBadge: {
+    backgroundColor: '#2a2a2a',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  countdownText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#888888',
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: '800',
-    color: TEXT,
-  },
-  sectionAction: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: ACCENT,
-  },
-  sectionTitleStandalone: {
-    marginTop: 18,
-    marginBottom: 10,
-    paddingHorizontal: 4,
-    fontSize: 18,
-    fontWeight: '800',
-    color: TEXT,
-  },
-  rowItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-  },
-  rowItemBorder: {
-    borderTopWidth: 1,
-    borderTopColor: '#E9E9EE',
-  },
-  rowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    paddingRight: 10,
-  },
-  emojiAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F3F4F6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  emojiAvatarText: {
-    fontSize: 18,
-  },
-  rowText: {
-    flex: 1,
-  },
-  rowTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: TEXT,
-  },
-  rowSub: {
-    marginTop: 2,
-    fontSize: 13,
     fontWeight: '600',
-    color: MUTED,
+    color: '#ffffff',
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
-  chev: {
-    fontSize: 22,
-    color: '#B0B0B8',
-    marginLeft: 10,
+  goalsList: {
+    gap: 12,
+    paddingHorizontal: 16,
   },
-  prefRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  goalCard: {
+    paddingHorizontal: 0,
     paddingVertical: 12,
   },
-  prefText: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-  },
-  danger: {
-    color: '#D11A2A',
-  },
-  footer: {
-    marginTop: 16,
-    textAlign: 'center',
-    color: '#9A9AA3',
-    fontWeight: '700',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'flex-end',
-    padding: 12,
-  },
-  modalCard: {
-    backgroundColor: CARD,
-    borderRadius: 20,
-    padding: 16,
-  },
-  modalHeader: {
+  goalPillWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+  goalTitleText: {
+    fontSize: 24,
+    fontWeight: '600',
+    color: '#ffffff',
+    flex: 1,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  statusContainer: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    backgroundColor: '#1a1a1a',
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#888888',
+    letterSpacing: 0.5,
+  },
+  statusTextCompleted: {
+    color: '#4CAF50',
+  },
+  historyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  historyCarousel: {
+    marginTop: 12,
+  },
+  historyCarouselContainer: {
+    paddingHorizontal: 4,
+    gap: 4,
+  },
+  historyColumn: {
+    gap: 4,
+  },
+  historySquare: {
+    width: 16,
+    height: 16,
+    borderRadius: 3,
+  },
+  historySquareIncomplete: {
+    backgroundColor: '#2a2a2a',
+  },
+  historySquareFuture: {
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#444444',
+  },
+  historySquareToday: {
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  sectionTitleLarge: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#ffffff',
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  friendsScroll: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  friendCard: {
+    width: 120,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  friendCardAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#333333',
+    marginBottom: 12,
+  },
+  friendCardEmoji: {
+    fontSize: 40,
+  },
+  friendCardName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  friendCardHandle: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#888888',
+    textAlign: 'center',
+  },
+  viewMoreButton: {
+    marginTop: 12,
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  viewMoreText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#000000',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    height: '95%',
+    paddingBottom: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a1a1a',
+  },
+  modalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  modalHeaderIcon: {
+    opacity: 0.8,
+  },
   modalTitle: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: TEXT,
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#ffffff',
   },
   closeButton: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 18,
+    backgroundColor: '#1a1a1a',
+  },
+  searchContainerLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    marginHorizontal: 20,
+    marginTop: 20,
+    marginBottom: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     borderRadius: 16,
-    backgroundColor: '#F0F0F0',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  searchIcon: {
+    marginRight: 12,
+  },
+  searchInputLarge: {
+    flex: 1,
+    fontSize: 16,
+    color: '#ffffff',
+    fontWeight: '500',
+  },
+  searchLoader: {
+    marginLeft: 12,
+  },
+  clearButton: {
+    marginLeft: 8,
+    padding: 4,
+  },
+  searchResultsContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  emptySearchContainer: {
+    paddingVertical: 80,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  closeButtonText: {
+  emptySearchTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  emptySearchText: {
+    fontSize: 14,
+    color: '#666666',
+    textAlign: 'center',
+    paddingHorizontal: 40,
+    lineHeight: 20,
+  },
+  noResultsContainer: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noResultsText: {
     fontSize: 18,
-    color: MUTED,
-    fontWeight: '800',
+    fontWeight: '600',
+    color: '#ffffff',
+    marginTop: 16,
+    marginBottom: 8,
   },
-  field: {
-    marginTop: 10,
+  noResultsSubtext: {
+    fontSize: 14,
+    color: '#666666',
+    textAlign: 'center',
+    paddingHorizontal: 40,
   },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: MUTED,
-    marginBottom: 6,
-    paddingHorizontal: 2,
-  },
-  input: {
-    backgroundColor: '#F6F7F9',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: TEXT,
-    fontWeight: '700',
-    borderWidth: 1,
-    borderColor: '#E7E7ED',
-  },
-  inputMultiline: {
-    minHeight: 84,
-    textAlignVertical: 'top',
-  },
-  modalActions: {
+  searchResultItem: {
     flexDirection: 'row',
-    marginTop: 14,
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
   },
-  modalButton: {
+  searchResultAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#333333',
+  },
+  searchResultAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  searchResultInfo: {
     flex: 1,
   },
+  searchResultName: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+  searchResultUsername: {
+    fontSize: 14,
+    color: '#888888',
+  },
+  addFriendButton: {
+    padding: 10,
+    borderRadius: 20,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
 });
-
