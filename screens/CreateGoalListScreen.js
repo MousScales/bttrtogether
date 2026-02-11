@@ -112,7 +112,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
     }
   }, [step, goalListData.friends]);
 
-  // Load available friends (only accepted friends, excluding selected friends)
+  // Load available friends (include all friends, mark selected as "already added")
   const loadAvailableFriends = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -120,7 +120,6 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
       // Get selected friend IDs
       const selectedFriendIds = (goalListData.friends || []).map(f => f.id);
-      const allExcludedIds = [...selectedFriendIds, user.id];
 
       // Load only accepted friends (bidirectional)
       const { data: friendships, error: friendshipsError } = await supabase
@@ -136,8 +135,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
       // Extract friend IDs (bidirectional)
       const friendIds = friendships
-        .map(f => f.user_id === user.id ? f.friend_id : f.user_id)
-        .filter(id => !allExcludedIds.includes(id));
+        .map(f => f.user_id === user.id ? f.friend_id : f.user_id);
 
       if (friendIds.length === 0) {
         setAvailableFriends([]);
@@ -154,7 +152,12 @@ export default function CreateGoalListScreen({ navigation, route }) {
         console.error('Error loading friend profiles:', friendsError);
         setAvailableFriends([]);
       } else {
-        setAvailableFriends(friendsData || []);
+        // Mark friends who are already selected
+        const friendsWithStatus = (friendsData || []).map(friend => ({
+          ...friend,
+          isAlreadyAdded: selectedFriendIds.includes(friend.id),
+        }));
+        setAvailableFriends(friendsWithStatus);
       }
     } catch (error) {
       console.error('Error loading friends:', error);
@@ -200,10 +203,13 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
       const friendIds = friendships?.map(f => f.user_id === user.id ? f.friend_id : f.user_id) || [];
       
-      // Filter results to only include friends and exclude selected
+      // Filter results to only include friends (include selected but mark them)
       const filtered = (allUsers || []).filter(user => 
-        friendIds.includes(user.id) && !allExcludedIds.includes(user.id)
-      );
+        friendIds.includes(user.id)
+      ).map(friend => ({
+        ...friend,
+        isAlreadyAdded: allExcludedIds.includes(friend.id),
+      }));
       
       setFriendSearchResults(filtered);
     } catch (error) {
@@ -476,7 +482,8 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
         if (participantsError) {
           console.error('Error adding participants:', participantsError);
-          // Don't throw - goal list is already created
+          // Show error but don't block - goal list is already created
+          Alert.alert('Warning', 'Goal list created but some participants could not be added. You can add them later.');
         }
 
         // Update goal list to require payment if consequence type is money
@@ -493,14 +500,22 @@ export default function CreateGoalListScreen({ navigation, route }) {
       
       if (isOnboarding) {
         // Navigate to main app after onboarding
-        Alert.alert('Success!', 'Your first goal list has been created!');
+        Alert.alert('Success!', 'Your first goal list has been created!', [
+          { text: 'OK', onPress: () => {
+            // Navigation will be handled by App.js when hasGoals becomes true
+          }}
+        ]);
       } else {
-        Alert.alert('Success', 'Goal list created successfully!');
-    navigation.goBack();
+        Alert.alert('Success', 'Goal list created successfully!', [
+          { text: 'OK', onPress: () => {
+            navigation.goBack();
+          }}
+        ]);
       }
     } catch (error) {
+      console.error('Error creating goal list:', error);
       setLoading(false);
-      Alert.alert('Error', error.message);
+      Alert.alert('Error', error.message || 'Failed to create goal list. Please try again.');
     }
   };
 
@@ -965,14 +980,17 @@ export default function CreateGoalListScreen({ navigation, route }) {
                 friendSearchResults.length > 0 ? (
                   friendSearchResults.map((user) => {
                     const isSelected = goalListData.friends?.some(f => f.id === user.id);
+                    const isAlreadyAdded = user.isAlreadyAdded || isSelected;
                     return (
                       <TouchableOpacity
                         key={user.id}
                         style={[
                           styles.friendSearchResultItem,
-                          isSelected && styles.friendSearchResultItemSelected
+                          isSelected && styles.friendSearchResultItemSelected,
+                          isAlreadyAdded && styles.friendItemAdded
                         ]}
-                        onPress={() => toggleFriendSelection(user)}
+                        onPress={() => !isAlreadyAdded && toggleFriendSelection(user)}
+                        disabled={isAlreadyAdded && !isSelected}
                       >
                         <View style={styles.friendSearchResultAvatar}>
                           {user.avatar_url ? (
@@ -990,7 +1008,10 @@ export default function CreateGoalListScreen({ navigation, route }) {
                           <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
                         </View>
                         {isSelected ? (
-                          <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                          <View style={styles.alreadyAddedContainer}>
+                            <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                            <Text style={styles.alreadyAddedText}>Added</Text>
+                          </View>
                         ) : (
                           <Ionicons name="add-circle-outline" size={28} color="#666666" />
                         )}
@@ -1007,14 +1028,17 @@ export default function CreateGoalListScreen({ navigation, route }) {
                 availableFriends.length > 0 ? (
                   availableFriends.map((user) => {
                     const isSelected = goalListData.friends?.some(f => f.id === user.id);
+                    const isAlreadyAdded = user.isAlreadyAdded || isSelected;
                     return (
                       <TouchableOpacity
                         key={user.id}
                         style={[
                           styles.friendSearchResultItem,
-                          isSelected && styles.friendSearchResultItemSelected
+                          isSelected && styles.friendSearchResultItemSelected,
+                          isAlreadyAdded && styles.friendItemAdded
                         ]}
-                        onPress={() => toggleFriendSelection(user)}
+                        onPress={() => !isAlreadyAdded && toggleFriendSelection(user)}
+                        disabled={isAlreadyAdded && !isSelected}
                       >
                         <View style={styles.friendSearchResultAvatar}>
                           {user.avatar_url ? (
@@ -1032,7 +1056,10 @@ export default function CreateGoalListScreen({ navigation, route }) {
                           <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
                         </View>
                         {isSelected ? (
-                          <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                          <View style={styles.alreadyAddedContainer}>
+                            <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                            <Text style={styles.alreadyAddedText}>Added</Text>
+                          </View>
                         ) : (
                           <Ionicons name="add-circle-outline" size={28} color="#666666" />
                         )}
@@ -1189,6 +1216,16 @@ export default function CreateGoalListScreen({ navigation, route }) {
       <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
         {renderStep()}
       </ScrollView>
+
+      {/* Loading Overlay */}
+      {loading && (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#4CAF50" />
+            <Text style={styles.loadingText}>Creating goal list...</Text>
+          </View>
+        </View>
+      )}
 
       {/* Navigation Buttons - Hidden */}
     </SafeAreaView>
@@ -1407,6 +1444,19 @@ const styles = StyleSheet.create({
   friendSearchResultItemSelected: {
     borderColor: '#4CAF50',
     backgroundColor: '#1a2a1a',
+  },
+  friendItemAdded: {
+    opacity: 0.6,
+  },
+  alreadyAddedContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  alreadyAddedText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4CAF50',
   },
   friendSearchResultAvatar: {
     width: 40,
@@ -1979,6 +2029,26 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    gap: 16,
+  },
+  loadingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

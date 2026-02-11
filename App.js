@@ -217,15 +217,23 @@ export default function App() {
       
       setHasProfile(!!profile);
 
-      // Check if user has created goals
+      // Check if user has created goals OR is a participant in any goal lists
       if (profile) {
-        const { data: goals } = await supabase
+        // Check for owned goal lists
+        const { data: ownedGoals } = await supabase
           .from('goal_lists')
           .select('id')
           .eq('user_id', session.user.id)
           .limit(1);
         
-        setHasGoals(goals && goals.length > 0);
+        // Check for participant goal lists
+        const { data: participantGoals } = await supabase
+          .from('group_goal_participants')
+          .select('goal_list_id')
+          .eq('user_id', session.user.id)
+          .limit(1);
+        
+        setHasGoals((ownedGoals && ownedGoals.length > 0) || (participantGoals && participantGoals.length > 0));
       } else {
         setHasGoals(false);
       }

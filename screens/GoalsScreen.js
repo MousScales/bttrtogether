@@ -110,7 +110,7 @@ export default function GoalsScreen({ navigation }) {
     }
   }, [currentGoalList, currentUser, participants.length]);
 
-  // Load available friends (only accepted friends, excluding existing participants)
+  // Load available friends (include all friends, mark participants as "already added")
   const loadAvailableFriends = async () => {
     if (!currentGoalList || !currentUser) return;
     
@@ -120,7 +120,6 @@ export default function GoalsScreen({ navigation }) {
 
       // Get existing participant IDs
       const existingParticipantIds = participants.map(p => p.user_id);
-      const allParticipantIds = [...existingParticipantIds, user.id];
 
       // Load only accepted friends (bidirectional)
       const { data: friendships, error: friendshipsError } = await supabase
@@ -136,8 +135,7 @@ export default function GoalsScreen({ navigation }) {
 
       // Extract friend IDs (bidirectional)
       const friendIds = friendships
-        .map(f => f.user_id === user.id ? f.friend_id : f.user_id)
-        .filter(id => !allParticipantIds.includes(id));
+        .map(f => f.user_id === user.id ? f.friend_id : f.user_id);
 
       if (friendIds.length === 0) {
         setAvailableFriends([]);
@@ -154,7 +152,12 @@ export default function GoalsScreen({ navigation }) {
         console.error('Error loading friend profiles:', friendsError);
         setAvailableFriends([]);
       } else {
-        setAvailableFriends(friendsData || []);
+        // Mark friends who are already participants
+        const friendsWithStatus = (friendsData || []).map(friend => ({
+          ...friend,
+          isAlreadyAdded: existingParticipantIds.includes(friend.id),
+        }));
+        setAvailableFriends(friendsWithStatus);
       }
     } catch (error) {
       console.error('Error loading friends:', error);
@@ -200,10 +203,13 @@ export default function GoalsScreen({ navigation }) {
 
       const friendIds = friendships?.map(f => f.user_id === user.id ? f.friend_id : f.user_id) || [];
       
-      // Filter results to only include friends and exclude participants
+      // Filter results to only include friends (include participants but mark them)
       const filtered = (allUsers || []).filter(user => 
-        friendIds.includes(user.id) && !allParticipantIds.includes(user.id)
-      );
+        friendIds.includes(user.id)
+      ).map(friend => ({
+        ...friend,
+        isAlreadyAdded: allParticipantIds.includes(friend.id),
+      }));
       
       setFriendsSearchResults(filtered);
     } catch (error) {
@@ -563,14 +569,32 @@ export default function GoalsScreen({ navigation }) {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (user) {
-        // Load goal lists
-        const { data: listsData, error: listsError } = await supabase
+        // Load goal lists where user is owner
+        const { data: ownedLists, error: ownedError } = await supabase
           .from('goal_lists')
           .select('*')
           .eq('user_id', user.id)
           .order('created_at', { ascending: true });
 
-        if (listsError) throw listsError;
+        if (ownedError) throw ownedError;
+
+        // Load goal lists where user is a participant
+        const { data: participantLists, error: participantError } = await supabase
+          .from('group_goal_participants')
+          .select('goal_list_id, goal_lists(*)')
+          .eq('user_id', user.id);
+
+        if (participantError) {
+          console.error('Error loading participant goal lists:', participantError);
+        }
+
+        // Combine owned and participant goal lists
+        const participantGoalLists = (participantLists || [])
+          .map(p => p.goal_lists)
+          .filter(list => list && !ownedLists?.some(owned => owned.id === list.id)); // Remove duplicates
+
+        const allLists = [...(ownedLists || []), ...participantGoalLists]
+          .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
         // Add hard-coded group goal for testing
         const hardCodedGroupGoal = {
@@ -585,7 +609,7 @@ export default function GoalsScreen({ navigation }) {
         };
 
         // Combine hard-coded goal with loaded goals
-        const allGoalLists = [hardCodedGroupGoal, ...(listsData || [])];
+        const allGoalLists = [hardCodedGroupGoal, ...allLists];
         setGoalLists(allGoalLists);
         
         // Set current goal list to the first one if not set
@@ -1937,36 +1961,47 @@ export default function GoalsScreen({ navigation }) {
                         ) : friendsSearchQuery.trim() ? (
                           // Show search results
                           friendsSearchResults.length > 0 ? (
-                            friendsSearchResults.map((friend) => (
-                              <TouchableOpacity
-                                key={friend.id}
-                                style={styles.friendItem}
-                                onPress={() => handleAddFriendToGoal(friend)}
-                              >
-                                <View style={styles.friendItemLeft}>
-                                  <View style={styles.friendItemAvatar}>
-                                    {friend.avatar_url ? (
-                                      <Image
-                                        source={{ uri: friend.avatar_url }}
-                                        style={styles.friendItemAvatarImage}
-                                        resizeMode="cover"
-                                      />
-                                    ) : (
-                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
-                                    )}
+                            friendsSearchResults.map((friend) => {
+                              const isAlreadyAdded = friend.isAlreadyAdded || false;
+                              return (
+                                <TouchableOpacity
+                                  key={friend.id}
+                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
+                                  disabled={isAlreadyAdded}
+                                >
+                                  <View style={styles.friendItemLeft}>
+                                    <View style={styles.friendItemAvatar}>
+                                      {friend.avatar_url ? (
+                                        <Image
+                                          source={{ uri: friend.avatar_url }}
+                                          style={styles.friendItemAvatarImage}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                      )}
+                                    </View>
+                                    <View style={styles.friendItemInfo}>
+                                      <Text style={styles.friendItemName}>
+                                        {friend.name || 'User'}
+                                      </Text>
+                                      <Text style={styles.friendItemUsername}>
+                                        {friend.username?.replace('@', '') || 'username'}
+                                      </Text>
+                                    </View>
                                   </View>
-                                  <View style={styles.friendItemInfo}>
-                                    <Text style={styles.friendItemName}>
-                                      {friend.name || 'User'}
-                                    </Text>
-                                    <Text style={styles.friendItemUsername}>
-                                      {friend.username?.replace('@', '') || 'username'}
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
-                              </TouchableOpacity>
-                            ))
+                                  {isAlreadyAdded ? (
+                                    <View style={styles.alreadyAddedContainer}>
+                                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                                      <Text style={styles.alreadyAddedText}>Added</Text>
+                                    </View>
+                                  ) : (
+                                    <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })
                           ) : (
                             <View style={styles.friendsEmptyContainer}>
                               <Text style={styles.friendsEmptyText}>No users found</Text>
@@ -1975,36 +2010,47 @@ export default function GoalsScreen({ navigation }) {
                         ) : (
                           // Show all available friends
                           availableFriends.length > 0 ? (
-                            availableFriends.map((friend) => (
-                              <TouchableOpacity
-                                key={friend.id}
-                                style={styles.friendItem}
-                                onPress={() => handleAddFriendToGoal(friend)}
-                              >
-                                <View style={styles.friendItemLeft}>
-                                  <View style={styles.friendItemAvatar}>
-                                    {friend.avatar_url ? (
-                                      <Image
-                                        source={{ uri: friend.avatar_url }}
-                                        style={styles.friendItemAvatarImage}
-                                        resizeMode="cover"
-                                      />
-                                    ) : (
-                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
-                                    )}
+                            availableFriends.map((friend) => {
+                              const isAlreadyAdded = friend.isAlreadyAdded || false;
+                              return (
+                                <TouchableOpacity
+                                  key={friend.id}
+                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
+                                  disabled={isAlreadyAdded}
+                                >
+                                  <View style={styles.friendItemLeft}>
+                                    <View style={styles.friendItemAvatar}>
+                                      {friend.avatar_url ? (
+                                        <Image
+                                          source={{ uri: friend.avatar_url }}
+                                          style={styles.friendItemAvatarImage}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                      )}
+                                    </View>
+                                    <View style={styles.friendItemInfo}>
+                                      <Text style={styles.friendItemName}>
+                                        {friend.name || 'User'}
+                                      </Text>
+                                      <Text style={styles.friendItemUsername}>
+                                        {friend.username?.replace('@', '') || 'username'}
+                                      </Text>
+                                    </View>
                                   </View>
-                                  <View style={styles.friendItemInfo}>
-                                    <Text style={styles.friendItemName}>
-                                      {friend.name || 'User'}
-                                    </Text>
-                                    <Text style={styles.friendItemUsername}>
-                                      {friend.username?.replace('@', '') || 'username'}
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
-                              </TouchableOpacity>
-                            ))
+                                  {isAlreadyAdded ? (
+                                    <View style={styles.alreadyAddedContainer}>
+                                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                                      <Text style={styles.alreadyAddedText}>Added</Text>
+                                    </View>
+                                  ) : (
+                                    <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })
                           ) : (
                             <View style={styles.friendsEmptyContainer}>
                               <Text style={styles.friendsEmptyText}>No friends available</Text>
@@ -2151,36 +2197,47 @@ export default function GoalsScreen({ navigation }) {
                         ) : friendsSearchQuery.trim() ? (
                           // Show search results
                           friendsSearchResults.length > 0 ? (
-                            friendsSearchResults.map((friend) => (
-                              <TouchableOpacity
-                                key={friend.id}
-                                style={styles.friendItem}
-                                onPress={() => handleAddFriendToGoal(friend)}
-                              >
-                                <View style={styles.friendItemLeft}>
-                                  <View style={styles.friendItemAvatar}>
-                                    {friend.avatar_url ? (
-                                      <Image
-                                        source={{ uri: friend.avatar_url }}
-                                        style={styles.friendItemAvatarImage}
-                                        resizeMode="cover"
-                                      />
-                                    ) : (
-                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
-                                    )}
+                            friendsSearchResults.map((friend) => {
+                              const isAlreadyAdded = friend.isAlreadyAdded || false;
+                              return (
+                                <TouchableOpacity
+                                  key={friend.id}
+                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
+                                  disabled={isAlreadyAdded}
+                                >
+                                  <View style={styles.friendItemLeft}>
+                                    <View style={styles.friendItemAvatar}>
+                                      {friend.avatar_url ? (
+                                        <Image
+                                          source={{ uri: friend.avatar_url }}
+                                          style={styles.friendItemAvatarImage}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                      )}
+                                    </View>
+                                    <View style={styles.friendItemInfo}>
+                                      <Text style={styles.friendItemName}>
+                                        {friend.name || 'User'}
+                                      </Text>
+                                      <Text style={styles.friendItemUsername}>
+                                        {friend.username?.replace('@', '') || 'username'}
+                                      </Text>
+                                    </View>
                                   </View>
-                                  <View style={styles.friendItemInfo}>
-                                    <Text style={styles.friendItemName}>
-                                      {friend.name || 'User'}
-                                    </Text>
-                                    <Text style={styles.friendItemUsername}>
-                                      {friend.username?.replace('@', '') || 'username'}
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
-                              </TouchableOpacity>
-                            ))
+                                  {isAlreadyAdded ? (
+                                    <View style={styles.alreadyAddedContainer}>
+                                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                                      <Text style={styles.alreadyAddedText}>Added</Text>
+                                    </View>
+                                  ) : (
+                                    <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })
                           ) : (
                             <View style={styles.friendsEmptyContainer}>
                               <Text style={styles.friendsEmptyText}>No users found</Text>
@@ -2189,36 +2246,47 @@ export default function GoalsScreen({ navigation }) {
                         ) : (
                           // Show all available friends
                           availableFriends.length > 0 ? (
-                            availableFriends.map((friend) => (
-                              <TouchableOpacity
-                                key={friend.id}
-                                style={styles.friendItem}
-                                onPress={() => handleAddFriendToGoal(friend)}
-                              >
-                                <View style={styles.friendItemLeft}>
-                                  <View style={styles.friendItemAvatar}>
-                                    {friend.avatar_url ? (
-                                      <Image
-                                        source={{ uri: friend.avatar_url }}
-                                        style={styles.friendItemAvatarImage}
-                                        resizeMode="cover"
-                                      />
-                                    ) : (
-                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
-                                    )}
+                            availableFriends.map((friend) => {
+                              const isAlreadyAdded = friend.isAlreadyAdded || false;
+                              return (
+                                <TouchableOpacity
+                                  key={friend.id}
+                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
+                                  disabled={isAlreadyAdded}
+                                >
+                                  <View style={styles.friendItemLeft}>
+                                    <View style={styles.friendItemAvatar}>
+                                      {friend.avatar_url ? (
+                                        <Image
+                                          source={{ uri: friend.avatar_url }}
+                                          style={styles.friendItemAvatarImage}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                      )}
+                                    </View>
+                                    <View style={styles.friendItemInfo}>
+                                      <Text style={styles.friendItemName}>
+                                        {friend.name || 'User'}
+                                      </Text>
+                                      <Text style={styles.friendItemUsername}>
+                                        {friend.username?.replace('@', '') || 'username'}
+                                      </Text>
+                                    </View>
                                   </View>
-                                  <View style={styles.friendItemInfo}>
-                                    <Text style={styles.friendItemName}>
-                                      {friend.name || 'User'}
-                                    </Text>
-                                    <Text style={styles.friendItemUsername}>
-                                      {friend.username?.replace('@', '') || 'username'}
-                                    </Text>
-                                  </View>
-                                </View>
-                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
-                              </TouchableOpacity>
-                            ))
+                                  {isAlreadyAdded ? (
+                                    <View style={styles.alreadyAddedContainer}>
+                                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                                      <Text style={styles.alreadyAddedText}>Added</Text>
+                                    </View>
+                                  ) : (
+                                    <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })
                           ) : (
                             <View style={styles.friendsEmptyContainer}>
                               <Text style={styles.friendsEmptyText}>No friends available</Text>
@@ -3299,6 +3367,19 @@ const styles = StyleSheet.create({
   friendItemUsername: {
     fontSize: 14,
     color: '#888888',
+  },
+  friendItemAdded: {
+    opacity: 0.6,
+  },
+  alreadyAddedContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  alreadyAddedText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4CAF50',
   },
   addUserButton: {
     backgroundColor: '#4CAF50',
