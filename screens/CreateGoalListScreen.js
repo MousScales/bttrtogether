@@ -280,7 +280,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
         Alert.alert('Success!', 'Your first goal list has been created!');
       } else {
         Alert.alert('Success', 'Goal list created successfully!');
-        navigation.goBack();
+    navigation.goBack();
       }
     } catch (error) {
       setLoading(false);
@@ -623,24 +623,24 @@ export default function CreateGoalListScreen({ navigation, route }) {
             {goalListData.consequenceType === 'money' ? (
               <>
                 <View style={styles.centeredContent}>
-                  <Text style={[styles.stepTitle, styles.centeredTitle]}>Set Bet Amount</Text>
-                  
-                  <View style={styles.amountPerUserSection}>
-                    <Text style={styles.amountLabel}>Amount per person:</Text>
-                    <View style={styles.amountInputWrapper}>
-                      <Text style={styles.currencySymbol}>$</Text>
-                      <TextInput
-                        style={styles.amountInput}
-                        keyboardType="numeric"
-                        value={goalListData.amount}
-                        onChangeText={(text) => setGoalListData({ ...goalListData, amount: text })}
-                        textAlign="center"
+                <Text style={[styles.stepTitle, styles.centeredTitle]}>Set Bet Amount</Text>
+                
+                <View style={styles.amountPerUserSection}>
+                  <Text style={styles.amountLabel}>Amount per person:</Text>
+                  <View style={styles.amountInputWrapper}>
+                    <Text style={styles.currencySymbol}>$</Text>
+                    <TextInput
+                      style={styles.amountInput}
+                      keyboardType="numeric"
+                      value={goalListData.amount}
+                      onChangeText={(text) => setGoalListData({ ...goalListData, amount: text })}
+                      textAlign="center"
                         placeholder="0.00"
                         placeholderTextColor="#666666"
-                      />
-                    </View>
+                    />
                   </View>
                 </View>
+                  </View>
 
                 {goalListData.amount && goalListData.amount.trim() !== '' && (
                   <View style={styles.buttonWrapper}>
@@ -660,15 +660,15 @@ export default function CreateGoalListScreen({ navigation, route }) {
                         },
                       ]}
                     >
-                      <TouchableOpacity 
+                    <TouchableOpacity 
                         style={styles.proceedButtonInner}
                         onPress={handleNext}
-                      >
+                    >
                         <Text style={styles.proceedButtonText}>Proceed</Text>
                         <Ionicons name="arrow-forward" size={16} color="#ffffff" />
-                      </TouchableOpacity>
+                    </TouchableOpacity>
                     </Animated.View>
-                  </View>
+                </View>
                 )}
               </>
             ) : (
@@ -687,13 +687,13 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
                 {goalListData.consequence.trim() !== '' && (
                   <View style={styles.buttonWrapper}>
-                    <TouchableOpacity 
+                  <TouchableOpacity 
                       style={styles.proceedButtonBottom}
                       onPress={handleNext}
-                    >
+                  >
                       <Text style={styles.proceedButtonText}>Proceed</Text>
                       <Ionicons name="arrow-forward" size={16} color="#ffffff" />
-                    </TouchableOpacity>
+                  </TouchableOpacity>
                   </View>
                 )}
               </>

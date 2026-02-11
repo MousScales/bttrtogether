@@ -240,7 +240,10 @@ export default function App() {
   }
 
   return (
-    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY}>
+    <StripeProvider
+      publishableKey={STRIPE_PUBLISHABLE_KEY}
+      merchantIdentifier="merchant.com.mousscales.bttrtogether"
+    >
       <NavigationContainer>
         <StatusBar style="light" />
         <RootStack.Navigator screenOptions={{ headerShown: false }}>

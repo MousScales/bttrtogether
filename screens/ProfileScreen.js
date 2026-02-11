@@ -141,7 +141,7 @@ export default function ProfileScreen({ navigation }) {
         }
         completionsByDate[dateStr].add(c.goal_id);
       });
-      
+
       // Check which dates have ALL goals completed
       const datesWithAllGoalsCompleted = Object.keys(completionsByDate).filter(dateStr => {
         const completedGoalIds = completionsByDate[dateStr];
@@ -294,7 +294,7 @@ export default function ProfileScreen({ navigation }) {
     }
     
     if (!goalCreatedAt) return 0;
-    
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const createdDate = new Date(goalCreatedAt);
@@ -570,12 +570,12 @@ export default function ProfileScreen({ navigation }) {
           {/* Stats Badges */}
           <View style={styles.badgesRow}>
             {dateJoined && (
-              <View style={styles.badge}>
-                <Ionicons name="calendar-outline" size={16} color="#ffffff" />
+            <View style={styles.badge}>
+              <Ionicons name="calendar-outline" size={16} color="#ffffff" />
                 <Text style={styles.badgeText}>
                   {dateJoined.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                 </Text>
-              </View>
+            </View>
             )}
             <View style={styles.badge}>
               <Ionicons name="flame" size={16} color="#FF6B35" />
@@ -642,7 +642,7 @@ export default function ProfileScreen({ navigation }) {
                             </TouchableOpacity>
                           ) : null;
                         })()}
-                      </View>
+                  </View>
                     </View>
                   );
                 })()}
@@ -650,7 +650,7 @@ export default function ProfileScreen({ navigation }) {
                 <View style={styles.goalPillWrapper}>
                   <Text style={styles.goalTitleText}>{category.name}</Text>
                 </View>
-                
+                    
                 {/* Completion History Grid - Carousel with 3 rows */}
                 {category.completionHistory && (() => {
                   const totalBoxes = category.completionHistory.length;
@@ -691,9 +691,9 @@ export default function ProfileScreen({ navigation }) {
                             const isCompleted = box.status === true;
                   
                             return (
-                              <View 
+                          <View 
                                 key={box.originalIndex} 
-                                style={[
+                            style={[
                                   styles.historySquare,
                                   isFuture 
                                     ? styles.historySquareFuture
@@ -705,12 +705,12 @@ export default function ProfileScreen({ navigation }) {
                               />
                             );
                           })}
-                        </View>
-                      ))}
+                          </View>
+                        ))}
                     </ScrollView>
                   );
                 })()}
-              </View>
+                      </View>
             ))}
           </View>
         </View>
@@ -752,7 +752,7 @@ export default function ProfileScreen({ navigation }) {
                           return (
                             <>
                               <Text style={styles.goalOverlayText}>{reasonText}</Text>
-                              
+                
                               {/* Start Button - Only show if owner, multiple participants, and all paid/accepted */}
                               {showStartButton && (
                                 <TouchableOpacity 

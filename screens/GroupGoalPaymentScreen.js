@@ -8,23 +8,29 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
-import { useStripe } from '@stripe/stripe-react-native';
+import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3a2dtZXdiem9oeWxuamlyeGF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3NTMzMDQsImV4cCI6MjA4NjMyOTMwNH0.hq4yiRGeCaJThwbFtULhUete6mZHnOkSLKzMHCpJvL4';
+
 export default function GroupGoalPaymentScreen({ navigation, route }) {
   const { goalListId, amount, goalListName } = route.params;
-  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const { confirmPayment } = useStripe();
   const [loading, setLoading] = useState(false);
-  const [paymentReady, setPaymentReady] = useState(false);
+  const [clientSecret, setClientSecret] = useState(null);
   const [paymentIntentId, setPaymentIntentId] = useState(null);
+  const [selectedMethod, setSelectedMethod] = useState(null); // 'card', 'apple', 'cashapp'
+  const [cardComplete, setCardComplete] = useState(false);
 
   useEffect(() => {
-    initializePaymentSheet();
+    createPaymentIntent();
   }, []);
 
-  const initializePaymentSheet = async () => {
+  const createPaymentIntent = async () => {
+    setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -33,119 +39,78 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
         return;
       }
 
-      // Call Supabase Edge Function to create payment intent
-      const { data, error } = await supabase.functions.invoke('super-handler', {
-        body: {
-          goal_list_id: goalListId,
-          amount: parseFloat(amount),
-          user_id: user.id,
-        },
-      });
+      const response = await fetch(
+        `https://xwkgmewbzohylnjirxaw.supabase.co/functions/v1/super-handler`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            goal_list_id: goalListId,
+            amount: parseFloat(amount),
+            user_id: user.id,
+          }),
+        }
+      );
 
-      if (error) {
-        throw new Error(error.message || 'Failed to create payment');
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText || `HTTP ${response.status}` };
+        }
+        throw new Error(errorData.error || errorData.message || `HTTP ${response.status}`);
       }
 
-      if (data.error) {
-        throw new Error(data.error);
+      const data = await response.json();
+      if (data.error || !data.clientSecret) {
+        throw new Error(data.error || 'Failed to create payment intent');
       }
 
-      const { clientSecret, paymentIntentId: intentId } = data;
-
-      const { error: initError } = await initPaymentSheet({
-        paymentIntentClientSecret: clientSecret,
-        merchantDisplayName: 'Bttr Together',
-      });
-
-      if (initError) {
-        throw initError;
-      }
-
-      setPaymentIntentId(intentId);
-      setPaymentReady(true);
+      setClientSecret(data.clientSecret);
+      setPaymentIntentId(data.paymentIntentId);
     } catch (error) {
-      console.error('Error initializing payment:', error);
+      console.error('Error creating payment intent:', error);
       Alert.alert('Error', error.message || 'Failed to initialize payment');
+    } finally {
       setLoading(false);
     }
   };
 
-  const handlePayment = async () => {
-    if (!paymentReady) {
-      Alert.alert('Error', 'Payment is not ready yet');
-      return;
-    }
+  const processPaymentSuccess = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    // Save payment to database
+    await supabase
+      .from('payments')
+      .insert({
+        goal_list_id: goalListId,
+        user_id: user.id,
+        amount: parseFloat(amount),
+        stripe_payment_intent_id: paymentIntentId,
+        status: 'succeeded',
+      });
 
-    setLoading(true);
+    // Update participant payment status
+    await supabase
+      .from('group_goal_participants')
+      .update({ payment_status: 'paid' })
+      .eq('goal_list_id', goalListId)
+      .eq('user_id', user.id);
 
-    try {
-      const { error } = await presentPaymentSheet();
+    // Update total pot
+    const { data: goalListCheck } = await supabase
+      .from('goal_lists')
+      .select('user_id, total_pot')
+      .eq('id', goalListId)
+      .single();
 
-      if (error) {
-        if (error.code !== 'Canceled') {
-          Alert.alert('Payment Failed', error.message);
-        }
-        setLoading(false);
-        return;
-      }
-
-      // Payment succeeded - update database directly
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      // Save payment to database
-      const { error: paymentError } = await supabase
-        .from('payments')
-        .insert({
-          goal_list_id: goalListId,
-          user_id: user.id,
-          amount: parseFloat(amount),
-          stripe_payment_intent_id: paymentIntentId,
-          status: 'succeeded',
-        });
-
-      if (paymentError) {
-        console.error('Error saving payment:', paymentError);
-        // Don't fail - payment already succeeded with Stripe
-      }
-
-      // Update participant payment status
-      const { error: participantError } = await supabase
-        .from('group_goal_participants')
-        .update({ payment_status: 'paid' })
-        .eq('goal_list_id', goalListId)
-        .eq('user_id', user.id);
-
-      if (participantError) {
-        console.error('Error updating participant:', participantError);
-      }
-
-      // Verify user has access to this goal list (either owner or participant)
-      const { data: goalListCheck } = await supabase
-        .from('goal_lists')
-        .select('user_id, total_pot')
-        .eq('id', goalListId)
-        .single();
-
-      if (!goalListCheck) {
-        console.error('Goal list not found or access denied');
-        return;
-      }
-
-      // Check if user is owner or participant
-      const isOwner = goalListCheck.user_id === user.id;
-      const { data: participantCheck } = await supabase
-        .from('group_goal_participants')
-        .select('id')
-        .eq('goal_list_id', goalListId)
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      if (!isOwner && !participantCheck) {
-        console.error('User does not have access to this goal list');
-        return;
-      }
-
-      // Update total pot
+    if (goalListCheck) {
       const newTotal = (goalListCheck.total_pot || 0) + parseFloat(amount);
       await supabase
         .from('goal_lists')
@@ -165,19 +130,110 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
           .update({ all_paid: true })
           .eq('id', goalListId);
       }
+    }
 
-      Alert.alert('Success', 'Payment successful! You\'ve joined the challenge.', [
-        {
-          text: 'OK',
-          onPress: () => {
-            // Navigate back and refresh
-            navigation.navigate('GoalsHome');
-            // The screen will reload via useFocusEffect
-          },
-        },
-      ]);
+    Alert.alert('Success', 'Payment successful! You\'ve joined the challenge.', [
+      {
+        text: 'OK',
+        onPress: () => navigation.navigate('GoalsHome'),
+      },
+    ]);
+  };
+
+  const handleCardPayment = async () => {
+    if (!cardComplete) {
+      Alert.alert('Error', 'Please enter a valid card');
+      return;
+    }
+
+    if (!clientSecret) {
+      Alert.alert('Error', 'Payment not ready');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error, paymentIntent } = await confirmPayment(clientSecret, {
+        paymentMethodType: 'Card',
+      });
+
+      if (error) {
+        if (error.code !== 'Canceled') {
+          Alert.alert('Payment Failed', error.message);
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (paymentIntent?.status === 'Succeeded') {
+        await processPaymentSuccess();
+      }
     } catch (error) {
-      console.error('Error processing payment:', error);
+      console.error('Error processing card payment:', error);
+      Alert.alert('Error', error.message || 'Failed to process payment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApplePay = async () => {
+    if (!clientSecret) {
+      Alert.alert('Error', 'Payment not ready');
+      return;
+    }
+
+    setSelectedMethod('apple');
+    setLoading(true);
+    try {
+      // Confirm payment with Apple Pay - this will show the Apple Pay sheet
+      const { error, paymentIntent } = await confirmPayment(clientSecret, {
+        paymentMethodType: 'ApplePay',
+      });
+
+      if (error) {
+        if (error.code !== 'Canceled') {
+          Alert.alert('Payment Failed', error.message);
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (paymentIntent?.status === 'Succeeded') {
+        await processPaymentSuccess();
+      }
+    } catch (error) {
+      console.error('Error processing Apple Pay:', error);
+      Alert.alert('Error', error.message || 'Failed to process payment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCashApp = async () => {
+    if (!clientSecret) {
+      Alert.alert('Error', 'Payment not ready');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { error, paymentIntent } = await confirmPayment(clientSecret, {
+        paymentMethodType: 'CashApp',
+      });
+
+      if (error) {
+        if (error.code !== 'Canceled') {
+          Alert.alert('Payment Failed', error.message);
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (paymentIntent?.status === 'Succeeded') {
+        await processPaymentSuccess();
+      }
+    } catch (error) {
+      console.error('Error processing Cash App:', error);
       Alert.alert('Error', error.message || 'Failed to process payment');
     } finally {
       setLoading(false);
@@ -203,19 +259,126 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
           </View>
         </View>
 
+        {loading && !clientSecret && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#4CAF50" />
+            <Text style={styles.loadingText}>Preparing payment...</Text>
+          </View>
+        )}
+
+        {clientSecret && (
+          <>
+            <Text style={styles.sectionTitle}>Choose Payment Method</Text>
+
+            {/* Apple Pay Button - Show on iOS, triggers payment immediately */}
+            {Platform.OS === 'ios' && (
+              <TouchableOpacity
+                style={styles.paymentMethodButton}
+                onPress={() => {
+                  if (clientSecret) {
+                    handleApplePay();
+                  }
+                }}
+                disabled={!clientSecret || loading}
+              >
+                <View style={styles.paymentMethodContent}>
+                  <Ionicons name="logo-apple" size={24} color="#ffffff" />
+                  <Text style={styles.paymentMethodText}>Apple Pay</Text>
+                </View>
+                {loading && selectedMethod === 'apple' ? (
+                  <ActivityIndicator size="small" color="#4CAF50" />
+                ) : (
+                  <Ionicons name="chevron-forward" size={20} color="#888888" />
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Cash App Button */}
+            <TouchableOpacity
+              style={[
+                styles.paymentMethodButton,
+                selectedMethod === 'cashapp' && styles.paymentMethodButtonSelected,
+              ]}
+              onPress={() => setSelectedMethod('cashapp')}
+            >
+              <View style={styles.paymentMethodContent}>
+                <Text style={styles.cashAppIcon}>$</Text>
+                <Text style={styles.paymentMethodText}>Cash App Pay</Text>
+              </View>
+              {selectedMethod === 'cashapp' && (
+                <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+              )}
+            </TouchableOpacity>
+
+            {/* Card Payment Option */}
+            <TouchableOpacity
+              style={[
+                styles.paymentMethodButton,
+                selectedMethod === 'card' && styles.paymentMethodButtonSelected,
+              ]}
+              onPress={() => setSelectedMethod('card')}
+            >
+              <View style={styles.paymentMethodContent}>
+                <Ionicons name="card" size={24} color="#ffffff" />
+                <Text style={styles.paymentMethodText}>Credit or Debit Card</Text>
+              </View>
+              {selectedMethod === 'card' && (
+                <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+              )}
+            </TouchableOpacity>
+
+            {/* Card Field (shown when card is selected) */}
+            {selectedMethod === 'card' && (
+              <View style={styles.cardFieldContainer}>
+                <CardField
+                  postalCodeEnabled={false}
+                  placeholders={{
+                    number: '4242 4242 4242 4242',
+                  }}
+                  cardStyle={{
+                    backgroundColor: '#1a1a1a',
+                    borderColor: '#2a2a2a',
+                    borderWidth: 1,
+                    textColor: '#ffffff',
+                    fontSize: 16,
+                  }}
+                  style={styles.cardField}
+                  onCardChange={(cardDetails) => {
+                    setCardComplete(cardDetails.complete);
+                  }}
+                />
+              </View>
+            )}
+
+            {/* Pay Button */}
+            {selectedMethod && (
+              <TouchableOpacity
+                style={[styles.payButton, loading && styles.payButtonDisabled]}
+                onPress={() => {
+                  if (selectedMethod === 'card') {
+                    handleCardPayment();
+                  } else if (selectedMethod === 'apple') {
+                    handleApplePay();
+                  } else if (selectedMethod === 'cashapp') {
+                    handleCashApp();
+                  }
+                }}
+                disabled={loading || (selectedMethod === 'card' && !cardComplete)}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Text style={styles.payButtonText}>Pay ${parseFloat(amount).toFixed(2)}</Text>
+                    <Ionicons name="lock-closed" size={20} color="#ffffff" />
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+
         <View style={styles.infoSection}>
-          <View style={styles.infoRow}>
-            <Ionicons name="information-circle-outline" size={20} color="#888888" />
-            <Text style={styles.infoText}>
-              You must pay this amount to join the challenge
-            </Text>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="trophy-outline" size={20} color="#888888" />
-            <Text style={styles.infoText}>
-              The winner will receive the total pot
-            </Text>
-          </View>
           <View style={styles.infoRow}>
             <Ionicons name="shield-checkmark-outline" size={20} color="#888888" />
             <Text style={styles.infoText}>
@@ -223,31 +386,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
             </Text>
           </View>
         </View>
-
-        {!paymentReady && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#4CAF50" />
-            <Text style={styles.loadingText}>Preparing payment...</Text>
-          </View>
-        )}
       </ScrollView>
-
-      <View style={styles.footer}>
-        <TouchableOpacity
-          style={[styles.payButton, (!paymentReady || loading) && styles.payButtonDisabled]}
-          onPress={handlePayment}
-          disabled={!paymentReady || loading}
-        >
-          {loading ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <>
-              <Text style={styles.payButtonText}>Pay ${parseFloat(amount).toFixed(2)}</Text>
-              <Ionicons name="lock-closed" size={20} color="#ffffff" />
-            </>
-          )}
-        </TouchableOpacity>
-      </View>
     </SafeAreaView>
   );
 }
@@ -307,7 +446,81 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#4CAF50',
   },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 16,
+  },
+  paymentMethodButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#2a2a2a',
+  },
+  paymentMethodButtonSelected: {
+    borderColor: '#4CAF50',
+    backgroundColor: '#1a2a1a',
+  },
+  paymentMethodContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  paymentMethodText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  cashAppIcon: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#00D632',
+  },
+  cardFieldContainer: {
+    marginTop: 16,
+    marginBottom: 24,
+  },
+  cardField: {
+    width: '100%',
+    height: 50,
+    marginVertical: 10,
+  },
+  payButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4CAF50',
+    paddingVertical: 16,
+    borderRadius: 12,
+    gap: 8,
+    marginTop: 8,
+  },
+  payButtonDisabled: {
+    backgroundColor: '#2a2a2a',
+    opacity: 0.5,
+  },
+  payButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#888888',
+  },
   infoSection: {
+    marginTop: 24,
     gap: 16,
   },
   infoRow: {
@@ -321,37 +534,4 @@ const styles = StyleSheet.create({
     color: '#888888',
     lineHeight: 20,
   },
-  loadingContainer: {
-    alignItems: 'center',
-    paddingVertical: 40,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: '#888888',
-  },
-  footer: {
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
-  },
-  payButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#4CAF50',
-    paddingVertical: 16,
-    borderRadius: 12,
-    gap: 8,
-  },
-  payButtonDisabled: {
-    backgroundColor: '#2a2a2a',
-    opacity: 0.5,
-  },
-  payButtonText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
 });
-

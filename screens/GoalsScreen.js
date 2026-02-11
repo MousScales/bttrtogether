@@ -66,7 +66,7 @@ export default function GoalsScreen({ navigation }) {
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
-
+  
   // Load current user on mount
   useEffect(() => {
     const loadCurrentUser = async () => {
@@ -98,7 +98,7 @@ export default function GoalsScreen({ navigation }) {
       checkOwnerPaymentStatus();
     }
   }, [currentGoalList]);
-
+  
   const checkOwnerPaymentStatus = async () => {
     if (!currentGoalList) return;
     
@@ -381,12 +381,12 @@ export default function GoalsScreen({ navigation }) {
             
             const hardCodedGoals = [
               // Your own goal - not completed
-              {
+    { 
                 id: 'hardcoded-goal-own-1',
                 title: 'Read 30 pages',
-                checked: false,
+      checked: false, 
                 viewers: [],
-                type: 'goal',
+      type: 'goal', 
                 validated: 0,
                 totalViewers: 0,
                 completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
@@ -399,14 +399,14 @@ export default function GoalsScreen({ navigation }) {
                 user_id: currentUser?.id || 'current-user',
               },
               // Other user's completed goal - Alex
-              {
+    { 
                 id: 'hardcoded-goal-other-1',
                 title: 'Morning workout',
-                checked: true,
+      checked: true, 
                 viewers: ['😎', '🤠', '🥳'],
-                type: 'goal',
+      type: 'goal', 
                 validated: 0,
-                totalViewers: 4,
+      totalViewers: 4,
                 completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
                 color: '#4CAF50',
                 goal_list_type: 'group',
@@ -421,12 +421,12 @@ export default function GoalsScreen({ navigation }) {
                 caption: 'Crushed my morning workout! 💪',
               },
               // Your own goal - completed
-              {
+    { 
                 id: 'hardcoded-goal-own-2',
                 title: 'Meditate 10 minutes',
                 checked: true,
                 viewers: [],
-                type: 'goal',
+      type: 'goal', 
                 validated: 0,
                 totalViewers: 0,
                 completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
@@ -439,12 +439,12 @@ export default function GoalsScreen({ navigation }) {
                 user_id: currentUser?.id || 'current-user',
               },
               // Other user's completed goal - Sam
-              {
+    { 
                 id: 'hardcoded-goal-other-2',
                 title: 'Drink 8 glasses',
                 checked: true,
                 viewers: ['🤓', '😊'],
-                type: 'goal',
+      type: 'goal', 
                 validated: 0,
                 totalViewers: 4,
                 completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
@@ -461,12 +461,12 @@ export default function GoalsScreen({ navigation }) {
                 caption: 'Staying hydrated! 💧',
               },
               // Your own goal - completed with proof
-              {
+    { 
                 id: 'hardcoded-goal-own-3',
                 title: 'Cook healthy meal',
-                checked: true,
+      checked: true, 
                 viewers: [],
-                type: 'goal',
+      type: 'goal', 
                 validated: 0,
                 totalViewers: 0,
                 completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
@@ -693,8 +693,8 @@ export default function GoalsScreen({ navigation }) {
     } else {
       // For group goals, navigate to post screen if not checked
       if (!goal.checked) {
-        navigation.navigate('GoalPost', { goal });
-      } else {
+      navigation.navigate('GoalPost', { goal });
+    } else {
         // If already checked, toggle it off
         const newChecked = false;
         
@@ -713,19 +713,19 @@ export default function GoalsScreen({ navigation }) {
             .eq('user_id', user.id)
             .eq('completed_at', todayStr);
 
-          setGoals(goals.map(g => {
-            if (g.id === id) {
-              const updatedHistory = [...(g.completionHistory || [])];
+      setGoals(goals.map(g => {
+        if (g.id === id) {
+          const updatedHistory = [...(g.completionHistory || [])];
               updatedHistory[g.currentDayIndex] = newChecked;
-              return { 
-                ...g, 
-                checked: newChecked,
-                completionHistory: updatedHistory
-              };
-            }
-            return g;
-          }));
+          return { 
+            ...g, 
+            checked: newChecked,
+            completionHistory: updatedHistory
+          };
         }
+        return g;
+      }));
+    }
       }
     }
   };
@@ -742,7 +742,7 @@ export default function GoalsScreen({ navigation }) {
 
   // Create animated values for each friend - recreate when friends change
   const floatAnims = useRef([]);
-  
+
   useEffect(() => {
     // Recreate animated values when friends change
     floatAnims.current = friends.map(() => new Animated.Value(0));
@@ -816,44 +816,44 @@ export default function GoalsScreen({ navigation }) {
 
       {/* Top Right Goal List Picker - Only show if there are goal lists */}
       {goalLists.length > 0 && currentGoalList && (
-        <View style={styles.switcherContainer}>
-          <TouchableOpacity 
-            onPress={() => setDropdownVisible(true)}
+      <View style={styles.switcherContainer}>
+        <TouchableOpacity 
+          onPress={() => setDropdownVisible(true)}
             style={styles.switcherButton}
-          >
+        >
             <Text style={styles.pillText}>{currentGoalList.name}</Text>
             <Ionicons name="chevron-down" size={16} color="#ffffff" />
-          </TouchableOpacity>
-        </View>
-      )}
+        </TouchableOpacity>
+          </View>
+        )}
 
       <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.challengesContainer}>
         {/* Floating Friends - Only for group goals */}
         {currentGoalList?.type === 'group' && friends.length > 0 && (
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            style={styles.friendsScrollView}
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false}
+              style={styles.friendsScrollView}
             contentContainerStyle={styles.friendsContainer}
-          >
-            {friends.map((friend, index) => {
+            >
+              {friends.map((friend, index) => {
               const floatAnim = floatAnims.current[index];
               if (!floatAnim) return null;
               
               const translateY = floatAnim.interpolate({
-                inputRange: [0, 1],
+              inputRange: [0, 1],
                 outputRange: [0, -10],
-              });
-              
-              return (
-                <Animated.View
-                  key={friend.id}
-                  style={[
-                    styles.friendItem,
+            });
+
+            return (
+              <Animated.View 
+                key={friend.id}
+                style={[
+                  styles.friendItem,
                     {
                       transform: [{ translateY }],
                     },
-                  ]}
+                ]}
                 >
                   <View style={styles.avatarWithProgress}>
                     <Svg width={64} height={64} style={styles.progressRing}>
@@ -884,10 +884,10 @@ export default function GoalsScreen({ navigation }) {
                     </View>
                   </View>
                   <Text style={styles.friendName}>{friend.name}</Text>
-                </Animated.View>
-              );
-            })}
-          </ScrollView>
+              </Animated.View>
+            );
+          })}
+        </ScrollView>
         )}
 
         {/* Duration/Deadline Info - Only for group goals */}
@@ -906,7 +906,7 @@ export default function GoalsScreen({ navigation }) {
             {currentGoalList.is_unlimited && (
               <Text style={styles.durationText}>Duration: Unlimited</Text>
             )}
-          </View>
+                    </View>
         )}
 
         {/* Countdown Timer - Only show if there are goals */}
@@ -914,9 +914,9 @@ export default function GoalsScreen({ navigation }) {
           <View style={styles.countdownContainerOuter}>
             <Text style={styles.countdownLabel}>Time left in day</Text>
             <Text style={styles.countdownText}>{timeRemainingDay}</Text>
-          </View>
+                  </View>
         )}
-
+                  
         {/* Personal Goals */}
         <View style={styles.personalGoalsContainer}>
           {/* Show placeholder if no goals (but not for test group goal) */}
@@ -924,8 +924,8 @@ export default function GoalsScreen({ navigation }) {
             <View style={styles.placeholderContainer}>
               <TouchableOpacity onPress={() => navigation.navigate('CreateGoalList')}>
                 <Text style={styles.placeholderText}>START YOUR ADVENTURE</Text>
-              </TouchableOpacity>
-            </View>
+                  </TouchableOpacity>
+                </View>
           ) : (
             /* Goals List */
             <>
@@ -939,7 +939,7 @@ export default function GoalsScreen({ navigation }) {
                 ]}>
               {/* Goal Title and Complete Button - Only for own goals */}
               {!isOtherUserGoal && (
-                <View style={styles.goalPillWrapper}>
+                  <View style={styles.goalPillWrapper}>
                   <TouchableOpacity 
                     onPress={() => {
                       setEditingGoalId(item.id);
@@ -950,20 +950,20 @@ export default function GoalsScreen({ navigation }) {
                   >
                     <Text style={styles.goalTitleText}>{item.title}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.statusContainer}
-                    onPress={() => toggleGoal(item.id)}
-                  >
-                    <Text style={[
-                      styles.statusText,
-                      item.checked && styles.statusTextCompleted
-                    ]}>
+                    <TouchableOpacity 
+                      style={styles.statusContainer}
+                      onPress={() => toggleGoal(item.id)}
+                    >
+                      <Text style={[
+                        styles.statusText,
+                        item.checked && styles.statusTextCompleted
+                      ]}>
                       {item.checked ? 'COMPLETED' : 'COMPLETE'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
               )}
-              
+                  
               {/* Completion History - Only for own goals */}
               {!isOtherUserGoal && item.completionHistory && (() => {
                 const totalBoxes = item.completionHistory.length;
@@ -1002,28 +1002,28 @@ export default function GoalsScreen({ navigation }) {
                           const isToday = box.originalIndex === item.currentDayIndex;
                           const isFuture = box.originalIndex > item.currentDayIndex;
                           const isCompleted = box.status === true;
-                          
-                          return (
-                            <View 
+                        
+                        return (
+                          <View 
                               key={box.originalIndex} 
-                              style={[
-                                styles.historySquare,
-                                isFuture 
-                                  ? styles.historySquareFuture
-                                  : isCompleted 
-                                    ? { backgroundColor: item.color || '#4CAF50' }
-                                    : styles.historySquareIncomplete,
-                                isToday && styles.historySquareToday
-                              ]} 
-                            />
-                          );
-                        })}
-                      </View>
+                            style={[
+                              styles.historySquare,
+                              isFuture 
+                                ? styles.historySquareFuture
+                                : isCompleted 
+                                  ? { backgroundColor: item.color || '#4CAF50' }
+                                  : styles.historySquareIncomplete,
+                              isToday && styles.historySquareToday
+                            ]} 
+                          />
+                        );
+                      })}
+                    </View>
                     ))}
                   </ScrollView>
                 );
               })()}
-              
+                  
               {/* Other User's Post - Image, Caption, Validate Section */}
               {isOtherUserGoal && item.checked && item.hasProof && (
                 <>
@@ -1082,30 +1082,30 @@ export default function GoalsScreen({ navigation }) {
                         </View>
                       ))}
                     </View>
-                    <Text style={styles.validationCount}>
+                      <Text style={styles.validationCount}>
                       {item.validated || 0}/{item.totalViewers || 0} have validated
-                    </Text>
-                    <TouchableOpacity 
+                      </Text>
+                  <TouchableOpacity 
                       style={styles.validateButtonTextOnly}
                       onPress={() => toggleValidation(item.id)}
-                    >
-                      <Text style={[
+                  >
+                    <Text style={[
                         styles.validateButtonTextOnlyText,
                         item.validated > 0 && styles.validateButtonTextOnlyTextActive
-                      ]}>
+                    ]}>
                         {item.validated > 0 ? 'Validated' : 'Validate'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                
                 </>
               )}
               </View>
-              );
-              })}
+                      );
+                    })}
             </>
-          )}
-
+                )}
+            
           {/* Add Goal Button - Show only if there are goal lists */}
           {goalLists.length > 0 && (
             <TouchableOpacity 
@@ -1118,7 +1118,7 @@ export default function GoalsScreen({ navigation }) {
               <Ionicons name="add" size={20} color="#888888" />
               <Text style={styles.addGoalText}>ADD GOAL</Text>
             </TouchableOpacity>
-          )}
+        )}
         </View>
       </ScrollView>
 
@@ -1144,7 +1144,7 @@ export default function GoalsScreen({ navigation }) {
                     currentGoalList?.id === list.id && styles.dropdownItemSelected
                   ]}
                   onPress={async () => {
-                    setDropdownVisible(false);
+                      setDropdownVisible(false);
                     // Clear goals first
                     setGoals([]);
                     
