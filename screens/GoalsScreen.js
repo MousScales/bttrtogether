@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Animated, TextInput, Image } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Animated, TextInput, Image, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
@@ -63,6 +63,10 @@ export default function GoalsScreen({ navigation }) {
   const [allParticipantsPaid, setAllParticipantsPaid] = useState(true); // Track if all participants paid
   const [currentUserProfile, setCurrentUserProfile] = useState(null); // Current user's profile from Supabase
   const [currentUser, setCurrentUser] = useState(null); // Current user from auth
+  const [availableFriends, setAvailableFriends] = useState([]); // All available friends to add
+  const [friendsSearchQuery, setFriendsSearchQuery] = useState(''); // Search query for friends
+  const [friendsSearchResults, setFriendsSearchResults] = useState([]); // Search results
+  const [searchingFriends, setSearchingFriends] = useState(false); // Loading state for search
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
@@ -98,6 +102,225 @@ export default function GoalsScreen({ navigation }) {
       checkOwnerPaymentStatus();
     }
   }, [currentGoalList]);
+
+  // Load available friends when participants change
+  useEffect(() => {
+    if (currentGoalList && currentUser) {
+      loadAvailableFriends();
+    }
+  }, [currentGoalList, currentUser, participants.length]);
+
+  // Load available friends (only accepted friends, excluding existing participants)
+  const loadAvailableFriends = async () => {
+    if (!currentGoalList || !currentUser) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Get existing participant IDs
+      const existingParticipantIds = participants.map(p => p.user_id);
+      const allParticipantIds = [...existingParticipantIds, user.id];
+
+      // Load only accepted friends (bidirectional)
+      const { data: friendships, error: friendshipsError } = await supabase
+        .from('friends')
+        .select('user_id, friend_id')
+        .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+
+      if (friendshipsError) {
+        console.error('Error loading friendships:', friendshipsError);
+        setAvailableFriends([]);
+        return;
+      }
+
+      // Extract friend IDs (bidirectional)
+      const friendIds = friendships
+        .map(f => f.user_id === user.id ? f.friend_id : f.user_id)
+        .filter(id => !allParticipantIds.includes(id));
+
+      if (friendIds.length === 0) {
+        setAvailableFriends([]);
+        return;
+      }
+
+      // Load friend profiles
+      const { data: friendsData, error: friendsError } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .in('id', friendIds);
+
+      if (friendsError) {
+        console.error('Error loading friend profiles:', friendsError);
+        setAvailableFriends([]);
+      } else {
+        setAvailableFriends(friendsData || []);
+      }
+    } catch (error) {
+      console.error('Error loading friends:', error);
+      setAvailableFriends([]);
+    }
+  };
+
+  // Search friends
+  const searchFriends = async (query) => {
+    if (!query.trim()) {
+      setFriendsSearchResults([]);
+      return;
+    }
+
+    setSearchingFriends(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Get existing participant IDs
+      const existingParticipantIds = participants.map(p => p.user_id);
+      const allParticipantIds = [...existingParticipantIds, user.id];
+
+      // First search all users
+      const { data: allUsers, error: searchError } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .or(`username.ilike.%${query}%,name.ilike.%${query}%`)
+        .neq('id', user.id)
+        .limit(50);
+
+      if (searchError) {
+        console.error('Error searching users:', searchError);
+        setFriendsSearchResults([]);
+        return;
+      }
+
+      // Filter to only show accepted friends (bidirectional)
+      const { data: friendships } = await supabase
+        .from('friends')
+        .select('user_id, friend_id')
+        .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+
+      const friendIds = friendships?.map(f => f.user_id === user.id ? f.friend_id : f.user_id) || [];
+      
+      // Filter results to only include friends and exclude participants
+      const filtered = (allUsers || []).filter(user => 
+        friendIds.includes(user.id) && !allParticipantIds.includes(user.id)
+      );
+      
+      setFriendsSearchResults(filtered);
+    } catch (error) {
+      console.error('Error searching friends:', error);
+    } finally {
+      setSearchingFriends(false);
+    }
+  };
+
+  // Debounce search
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (friendsSearchQuery.trim()) {
+        searchFriends(friendsSearchQuery);
+      } else {
+        setFriendsSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [friendsSearchQuery]);
+
+  // Send friend request (instead of directly adding)
+  const handleAddFriendToGoal = async (friend) => {
+    if (!currentGoalList || !currentUser) return;
+
+    try {
+      // Check if already friends (bidirectional)
+      const { data: friendshipCheck } = await supabase
+        .from('friends')
+        .select('id, user_id, friend_id')
+        .or(`and(user_id.eq.${currentUser.id},friend_id.eq.${friend.id}),and(user_id.eq.${friend.id},friend_id.eq.${currentUser.id})`)
+        .limit(1);
+
+      const isFriend = friendshipCheck && friendshipCheck.length > 0;
+
+      if (isFriend) {
+        // Already friends, add directly to goal
+        const { error } = await supabase
+          .from('group_goal_participants')
+          .insert({
+            goal_list_id: currentGoalList.id,
+            user_id: friend.id,
+            payment_status: 'pending',
+          });
+
+        if (error) {
+          console.error('Error adding friend:', error);
+          Alert.alert('Error', 'Failed to add friend to goal');
+        } else {
+          Alert.alert('Success', 'Friend added to goal!');
+          await checkOwnerPaymentStatus();
+          await loadAvailableFriends();
+          setFriendsSearchQuery('');
+          setFriendsSearchResults([]);
+        }
+      } else {
+        // Check if friend request already exists (bidirectional)
+        const { data: existingRequests } = await supabase
+          .from('friend_requests')
+          .select('id, status, requester_id, recipient_id')
+          .or(`and(requester_id.eq.${currentUser.id},recipient_id.eq.${friend.id}),and(requester_id.eq.${friend.id},recipient_id.eq.${currentUser.id})`)
+          .limit(1);
+
+        const existingRequest = existingRequests && existingRequests.length > 0 ? existingRequests[0] : null;
+
+        if (existingRequest) {
+          if (existingRequest.status === 'pending') {
+            Alert.alert('Friend Request', 'Friend request already sent!');
+          } else if (existingRequest.status === 'accepted') {
+            Alert.alert('Info', 'You are already friends!');
+          } else {
+            // Request was declined, create a new one
+            const { error } = await supabase
+              .from('friend_requests')
+              .insert({
+                requester_id: currentUser.id,
+                recipient_id: friend.id,
+                status: 'pending',
+              });
+
+            if (error) {
+              console.error('Error sending friend request:', error);
+              Alert.alert('Error', 'Failed to send friend request');
+            } else {
+              Alert.alert('Success', 'Friend request sent! They will see it in their profile.');
+              await loadAvailableFriends();
+              setFriendsSearchQuery('');
+              setFriendsSearchResults([]);
+            }
+          }
+        } else {
+          // Send new friend request
+          const { error } = await supabase
+            .from('friend_requests')
+            .insert({
+              requester_id: currentUser.id,
+              recipient_id: friend.id,
+              status: 'pending',
+            });
+
+          if (error) {
+            console.error('Error sending friend request:', error);
+            Alert.alert('Error', 'Failed to send friend request');
+          } else {
+            Alert.alert('Success', 'Friend request sent! They will see it in their profile.');
+            await loadAvailableFriends();
+            setFriendsSearchQuery('');
+            setFriendsSearchResults([]);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error adding friend:', error);
+      Alert.alert('Error', 'Failed to send friend request');
+    }
+  };
   
   const checkOwnerPaymentStatus = async () => {
     if (!currentGoalList) return;
@@ -1681,17 +1904,114 @@ export default function GoalsScreen({ navigation }) {
                       <Text style={styles.addUserText}>
                         Add at least one friend to start
                       </Text>
-                      <TouchableOpacity 
-                        style={styles.addUserButtonTextOnly}
-                        onPress={() => {
-                          navigation.navigate('AddFriendsToGoal', {
-                            goalListId: currentGoalList.id,
-                            goalListName: currentGoalList.name,
-                          });
-                        }}
-                      >
-                        <Text style={styles.addUserButtonTextUnderlined}>Add User</Text>
-                      </TouchableOpacity>
+                      
+                      {/* Search Input */}
+                      <View style={styles.friendsSearchContainer}>
+                        <Ionicons name="search" size={20} color="#888888" style={styles.searchIcon} />
+                        <TextInput
+                          style={styles.friendsSearchInput}
+                          placeholder="Search friends by name..."
+                          placeholderTextColor="#666666"
+                          value={friendsSearchQuery}
+                          onChangeText={setFriendsSearchQuery}
+                        />
+                        {friendsSearchQuery.length > 0 && (
+                          <TouchableOpacity
+                            onPress={() => {
+                              setFriendsSearchQuery('');
+                              setFriendsSearchResults([]);
+                            }}
+                            style={styles.clearSearchButton}
+                          >
+                            <Ionicons name="close-circle" size={20} color="#888888" />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {/* Friends List */}
+                      <ScrollView style={styles.friendsListContainer} showsVerticalScrollIndicator={false}>
+                        {searchingFriends ? (
+                          <View style={styles.friendsLoadingContainer}>
+                            <Text style={styles.friendsLoadingText}>Searching...</Text>
+                          </View>
+                        ) : friendsSearchQuery.trim() ? (
+                          // Show search results
+                          friendsSearchResults.length > 0 ? (
+                            friendsSearchResults.map((friend) => (
+                              <TouchableOpacity
+                                key={friend.id}
+                                style={styles.friendItem}
+                                onPress={() => handleAddFriendToGoal(friend)}
+                              >
+                                <View style={styles.friendItemLeft}>
+                                  <View style={styles.friendItemAvatar}>
+                                    {friend.avatar_url ? (
+                                      <Image
+                                        source={{ uri: friend.avatar_url }}
+                                        style={styles.friendItemAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.friendItemInfo}>
+                                    <Text style={styles.friendItemName}>
+                                      {friend.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.friendItemUsername}>
+                                      {friend.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                              </TouchableOpacity>
+                            ))
+                          ) : (
+                            <View style={styles.friendsEmptyContainer}>
+                              <Text style={styles.friendsEmptyText}>No users found</Text>
+                            </View>
+                          )
+                        ) : (
+                          // Show all available friends
+                          availableFriends.length > 0 ? (
+                            availableFriends.map((friend) => (
+                              <TouchableOpacity
+                                key={friend.id}
+                                style={styles.friendItem}
+                                onPress={() => handleAddFriendToGoal(friend)}
+                              >
+                                <View style={styles.friendItemLeft}>
+                                  <View style={styles.friendItemAvatar}>
+                                    {friend.avatar_url ? (
+                                      <Image
+                                        source={{ uri: friend.avatar_url }}
+                                        style={styles.friendItemAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.friendItemInfo}>
+                                    <Text style={styles.friendItemName}>
+                                      {friend.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.friendItemUsername}>
+                                      {friend.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                              </TouchableOpacity>
+                            ))
+                          ) : (
+                            <View style={styles.friendsEmptyContainer}>
+                              <Text style={styles.friendsEmptyText}>No friends available</Text>
+                            </View>
+                          )
+                        )}
+                      </ScrollView>
                     </View>
                   )}
                 </>
@@ -1798,17 +2118,114 @@ export default function GoalsScreen({ navigation }) {
                       <Text style={styles.addUserText}>
                         Add at least one friend to start
                       </Text>
-                      <TouchableOpacity 
-                        style={styles.addUserButtonTextOnly}
-                        onPress={() => {
-                          navigation.navigate('AddFriendsToGoal', {
-                            goalListId: currentGoalList.id,
-                            goalListName: currentGoalList.name,
-                          });
-                        }}
-                      >
-                        <Text style={styles.addUserButtonTextUnderlined}>Add User</Text>
-                      </TouchableOpacity>
+                      
+                      {/* Search Input */}
+                      <View style={styles.friendsSearchContainer}>
+                        <Ionicons name="search" size={20} color="#888888" style={styles.searchIcon} />
+                        <TextInput
+                          style={styles.friendsSearchInput}
+                          placeholder="Search friends by name..."
+                          placeholderTextColor="#666666"
+                          value={friendsSearchQuery}
+                          onChangeText={setFriendsSearchQuery}
+                        />
+                        {friendsSearchQuery.length > 0 && (
+                          <TouchableOpacity
+                            onPress={() => {
+                              setFriendsSearchQuery('');
+                              setFriendsSearchResults([]);
+                            }}
+                            style={styles.clearSearchButton}
+                          >
+                            <Ionicons name="close-circle" size={20} color="#888888" />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {/* Friends List */}
+                      <ScrollView style={styles.friendsListContainer} showsVerticalScrollIndicator={false}>
+                        {searchingFriends ? (
+                          <View style={styles.friendsLoadingContainer}>
+                            <Text style={styles.friendsLoadingText}>Searching...</Text>
+                          </View>
+                        ) : friendsSearchQuery.trim() ? (
+                          // Show search results
+                          friendsSearchResults.length > 0 ? (
+                            friendsSearchResults.map((friend) => (
+                              <TouchableOpacity
+                                key={friend.id}
+                                style={styles.friendItem}
+                                onPress={() => handleAddFriendToGoal(friend)}
+                              >
+                                <View style={styles.friendItemLeft}>
+                                  <View style={styles.friendItemAvatar}>
+                                    {friend.avatar_url ? (
+                                      <Image
+                                        source={{ uri: friend.avatar_url }}
+                                        style={styles.friendItemAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.friendItemInfo}>
+                                    <Text style={styles.friendItemName}>
+                                      {friend.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.friendItemUsername}>
+                                      {friend.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                              </TouchableOpacity>
+                            ))
+                          ) : (
+                            <View style={styles.friendsEmptyContainer}>
+                              <Text style={styles.friendsEmptyText}>No users found</Text>
+                            </View>
+                          )
+                        ) : (
+                          // Show all available friends
+                          availableFriends.length > 0 ? (
+                            availableFriends.map((friend) => (
+                              <TouchableOpacity
+                                key={friend.id}
+                                style={styles.friendItem}
+                                onPress={() => handleAddFriendToGoal(friend)}
+                              >
+                                <View style={styles.friendItemLeft}>
+                                  <View style={styles.friendItemAvatar}>
+                                    {friend.avatar_url ? (
+                                      <Image
+                                        source={{ uri: friend.avatar_url }}
+                                        style={styles.friendItemAvatarImage}
+                                        resizeMode="cover"
+                                      />
+                                    ) : (
+                                      <Text style={styles.friendItemAvatarEmoji}>👤</Text>
+                                    )}
+                                  </View>
+                                  <View style={styles.friendItemInfo}>
+                                    <Text style={styles.friendItemName}>
+                                      {friend.name || 'User'}
+                                    </Text>
+                                    <Text style={styles.friendItemUsername}>
+                                      {friend.username?.replace('@', '') || 'username'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <Ionicons name="add-circle" size={24} color="#4CAF50" />
+                              </TouchableOpacity>
+                            ))
+                          ) : (
+                            <View style={styles.friendsEmptyContainer}>
+                              <Text style={styles.friendsEmptyText}>No friends available</Text>
+                            </View>
+                          )
+                        )}
+                      </ScrollView>
                     </View>
                   )}
                 </>
@@ -2783,7 +3200,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   addUserSection: {
-    alignItems: 'center',
     padding: 24,
     marginBottom: 24,
   },
@@ -2791,9 +3207,98 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#888888',
     textAlign: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
     lineHeight: 24,
     fontWeight: '500',
+  },
+  friendsSearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f0f0f',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 20,
+  },
+  searchIcon: {
+    marginRight: 12,
+  },
+  friendsSearchInput: {
+    flex: 1,
+    color: '#ffffff',
+    fontSize: 16,
+  },
+  clearSearchButton: {
+    marginLeft: 8,
+    padding: 4,
+  },
+  friendsListContainer: {
+    maxHeight: 300,
+  },
+  friendsLoadingContainer: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  friendsLoadingText: {
+    color: '#888888',
+    fontSize: 14,
+    marginTop: 8,
+  },
+  friendsEmptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  friendsEmptyText: {
+    color: '#666666',
+    fontSize: 14,
+  },
+  friendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0f0f0f',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    marginBottom: 12,
+  },
+  friendItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  friendItemAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#1a1a1a',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  friendItemAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  friendItemAvatarEmoji: {
+    fontSize: 20,
+  },
+  friendItemInfo: {
+    flex: 1,
+  },
+  friendItemName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  friendItemUsername: {
+    fontSize: 14,
+    color: '#888888',
   },
   addUserButton: {
     backgroundColor: '#4CAF50',

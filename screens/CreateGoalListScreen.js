@@ -43,6 +43,7 @@ export default function CreateGoalListScreen({ navigation, route }) {
   const [friendSearchQuery, setFriendSearchQuery] = useState('');
   const [friendSearchResults, setFriendSearchResults] = useState([]);
   const [searchingFriends, setSearchingFriends] = useState(false);
+  const [availableFriends, setAvailableFriends] = useState([]); // All available friends to add
   const proceedAnim = useRef(new Animated.Value(0)).current;
   const addGoalButtonAnim = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -110,6 +111,221 @@ export default function CreateGoalListScreen({ navigation, route }) {
       }
     }
   }, [step, goalListData.friends]);
+
+  // Load available friends (only accepted friends, excluding selected friends)
+  const loadAvailableFriends = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Get selected friend IDs
+      const selectedFriendIds = (goalListData.friends || []).map(f => f.id);
+      const allExcludedIds = [...selectedFriendIds, user.id];
+
+      // Load only accepted friends (bidirectional)
+      const { data: friendships, error: friendshipsError } = await supabase
+        .from('friends')
+        .select('user_id, friend_id')
+        .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+
+      if (friendshipsError) {
+        console.error('Error loading friendships:', friendshipsError);
+        setAvailableFriends([]);
+        return;
+      }
+
+      // Extract friend IDs (bidirectional)
+      const friendIds = friendships
+        .map(f => f.user_id === user.id ? f.friend_id : f.user_id)
+        .filter(id => !allExcludedIds.includes(id));
+
+      if (friendIds.length === 0) {
+        setAvailableFriends([]);
+        return;
+      }
+
+      // Load friend profiles
+      const { data: friendsData, error: friendsError } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .in('id', friendIds);
+
+      if (friendsError) {
+        console.error('Error loading friend profiles:', friendsError);
+        setAvailableFriends([]);
+      } else {
+        setAvailableFriends(friendsData || []);
+      }
+    } catch (error) {
+      console.error('Error loading friends:', error);
+      setAvailableFriends([]);
+    }
+  };
+
+  // Search friends
+  const searchFriends = async (query) => {
+    if (!query.trim()) {
+      setFriendSearchResults([]);
+      return;
+    }
+
+    setSearchingFriends(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Get selected friend IDs
+      const selectedFriendIds = (goalListData.friends || []).map(f => f.id);
+      const allExcludedIds = [...selectedFriendIds, user.id];
+
+      // First search all users
+      const { data: allUsers, error: searchError } = await supabase
+        .from('profiles')
+        .select('id, name, username, avatar_url')
+        .or(`username.ilike.%${query}%,name.ilike.%${query}%`)
+        .neq('id', user.id)
+        .limit(50);
+
+      if (searchError) {
+        console.error('Error searching users:', searchError);
+        setFriendSearchResults([]);
+        return;
+      }
+
+      // Filter to only show accepted friends (bidirectional)
+      const { data: friendships } = await supabase
+        .from('friends')
+        .select('user_id, friend_id')
+        .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+
+      const friendIds = friendships?.map(f => f.user_id === user.id ? f.friend_id : f.user_id) || [];
+      
+      // Filter results to only include friends and exclude selected
+      const filtered = (allUsers || []).filter(user => 
+        friendIds.includes(user.id) && !allExcludedIds.includes(user.id)
+      );
+      
+      setFriendSearchResults(filtered);
+    } catch (error) {
+      console.error('Error searching friends:', error);
+    } finally {
+      setSearchingFriends(false);
+    }
+  };
+
+  // Debounce search
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (friendSearchQuery.trim()) {
+        searchFriends(friendSearchQuery);
+      } else {
+        setFriendSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [friendSearchQuery]);
+
+  // Send friend request or add friend if already friends
+  const toggleFriendSelection = async (user) => {
+    const isSelected = goalListData.friends?.some(f => f.id === user.id);
+    if (isSelected) {
+      // Remove friend from selection
+      const updatedFriends = goalListData.friends.filter(f => f.id !== user.id);
+      setGoalListData({ ...goalListData, friends: updatedFriends });
+      setTimeout(() => loadAvailableFriends(), 100);
+      return;
+    }
+
+    try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser) return;
+
+      // Check if already friends
+      const { data: friendshipCheck } = await supabase
+        .from('friends')
+        .select('id, user_id, friend_id')
+        .or(`and(user_id.eq.${currentUser.id},friend_id.eq.${user.id}),and(user_id.eq.${user.id},friend_id.eq.${currentUser.id})`)
+        .limit(1);
+
+      const isFriend = friendshipCheck && friendshipCheck.length > 0;
+
+      if (isFriend) {
+        // Already friends, add to selection
+        setGoalListData({ 
+          ...goalListData, 
+          friends: [...(goalListData.friends || []), user] 
+        });
+        setTimeout(() => loadAvailableFriends(), 100);
+      } else {
+        // Check if friend request already exists
+        const { data: existingRequests } = await supabase
+          .from('friend_requests')
+          .select('id, status, requester_id, recipient_id')
+          .or(`and(requester_id.eq.${currentUser.id},recipient_id.eq.${user.id}),and(requester_id.eq.${user.id},recipient_id.eq.${currentUser.id})`)
+          .limit(1);
+
+        const existingRequest = existingRequests && existingRequests.length > 0 ? existingRequests[0] : null;
+
+        if (existingRequest) {
+          if (existingRequest.status === 'pending') {
+            Alert.alert('Friend Request', 'Friend request already sent!');
+          } else if (existingRequest.status === 'accepted') {
+            // Shouldn't happen if friendship check worked, but handle it
+            setGoalListData({ 
+              ...goalListData, 
+              friends: [...(goalListData.friends || []), user] 
+            });
+            setTimeout(() => loadAvailableFriends(), 100);
+          } else {
+            // Request was declined, create a new one
+            const { error } = await supabase
+              .from('friend_requests')
+              .insert({
+                requester_id: currentUser.id,
+                recipient_id: user.id,
+                status: 'pending',
+              });
+
+            if (error) {
+              console.error('Error sending friend request:', error);
+              Alert.alert('Error', 'Failed to send friend request');
+            } else {
+              Alert.alert('Success', 'Friend request sent! They will see it in their profile.');
+              setTimeout(() => loadAvailableFriends(), 100);
+            }
+          }
+        } else {
+          // Send new friend request
+          const { error } = await supabase
+            .from('friend_requests')
+            .insert({
+              requester_id: currentUser.id,
+              recipient_id: user.id,
+              status: 'pending',
+            });
+
+          if (error) {
+            console.error('Error sending friend request:', error);
+            Alert.alert('Error', 'Failed to send friend request');
+          } else {
+            Alert.alert('Success', 'Friend request sent! They will see it in their profile.');
+            setTimeout(() => loadAvailableFriends(), 100);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in toggleFriendSelection:', error);
+      Alert.alert('Error', 'Failed to process friend request');
+    }
+  };
+
+  // Load available friends when on step 6
+  useEffect(() => {
+    if (step === 6) {
+      loadAvailableFriends();
+    }
+  }, [step]);
 
   useEffect(() => {
     if (step > 1) {
@@ -717,55 +933,119 @@ export default function CreateGoalListScreen({ navigation, route }) {
               <Ionicons name="search" size={20} color="#666666" style={styles.friendSearchIcon} />
               <TextInput
                 style={styles.friendSearchInput}
-                placeholder="Search by username or name..."
+                placeholder="Search friends by name..."
                 placeholderTextColor="#666666"
                 value={friendSearchQuery}
                 onChangeText={setFriendSearchQuery}
               />
+              {friendSearchQuery.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setFriendSearchQuery('');
+                    setFriendSearchResults([]);
+                  }}
+                  style={styles.clearSearchButton}
+                >
+                  <Ionicons name="close-circle" size={20} color="#888888" />
+                </TouchableOpacity>
+              )}
               {searchingFriends && (
                 <ActivityIndicator size="small" color="#ffffff" style={styles.friendSearchLoader} />
               )}
             </View>
 
-            {/* Search Results */}
-            {friendSearchResults.length > 0 && (
-              <ScrollView style={styles.friendSearchResults} showsVerticalScrollIndicator={false}>
-                {friendSearchResults.map((user) => {
-                  const isSelected = goalListData.friends?.some(f => f.id === user.id);
-                  return (
-                    <TouchableOpacity
-                      key={user.id}
-                      style={[
-                        styles.friendSearchResultItem,
-                        isSelected && styles.friendSearchResultItemSelected
-                      ]}
-                      onPress={() => toggleFriendSelection(user)}
-                    >
-                      <View style={styles.friendSearchResultAvatar}>
-                        {user.avatar_url ? (
-                          <Image
-                            source={{ uri: user.avatar_url }}
-                            style={styles.friendSearchResultAvatarImage}
-                            resizeMode="cover"
-                          />
+            {/* Friends List - Show all friends or search results */}
+            <ScrollView style={styles.friendSearchResults} showsVerticalScrollIndicator={false}>
+              {searchingFriends ? (
+                <View style={styles.friendsLoadingContainer}>
+                  <Text style={styles.friendsLoadingText}>Searching...</Text>
+                </View>
+              ) : friendSearchQuery.trim() ? (
+                // Show search results
+                friendSearchResults.length > 0 ? (
+                  friendSearchResults.map((user) => {
+                    const isSelected = goalListData.friends?.some(f => f.id === user.id);
+                    return (
+                      <TouchableOpacity
+                        key={user.id}
+                        style={[
+                          styles.friendSearchResultItem,
+                          isSelected && styles.friendSearchResultItemSelected
+                        ]}
+                        onPress={() => toggleFriendSelection(user)}
+                      >
+                        <View style={styles.friendSearchResultAvatar}>
+                          {user.avatar_url ? (
+                            <Image
+                              source={{ uri: user.avatar_url }}
+                              style={styles.friendSearchResultAvatarImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="person" size={24} color="#666666" />
+                          )}
+                        </View>
+                        <View style={styles.friendSearchResultInfo}>
+                          <Text style={styles.friendSearchResultName}>{user.name || 'User'}</Text>
+                          <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
+                        </View>
+                        {isSelected ? (
+                          <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
                         ) : (
-                          <Ionicons name="person" size={24} color="#666666" />
+                          <Ionicons name="add-circle-outline" size={28} color="#666666" />
                         )}
-                      </View>
-                      <View style={styles.friendSearchResultInfo}>
-                        <Text style={styles.friendSearchResultName}>{user.name || 'User'}</Text>
-                        <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
-                      </View>
-                      {isSelected ? (
-                        <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
-                      ) : (
-                        <Ionicons name="add-circle-outline" size={28} color="#666666" />
-                      )}
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
+                      </TouchableOpacity>
+                    );
+                  })
+                ) : (
+                  <View style={styles.friendsEmptyContainer}>
+                    <Text style={styles.friendsEmptyText}>No users found</Text>
+                  </View>
+                )
+              ) : (
+                // Show all available friends
+                availableFriends.length > 0 ? (
+                  availableFriends.map((user) => {
+                    const isSelected = goalListData.friends?.some(f => f.id === user.id);
+                    return (
+                      <TouchableOpacity
+                        key={user.id}
+                        style={[
+                          styles.friendSearchResultItem,
+                          isSelected && styles.friendSearchResultItemSelected
+                        ]}
+                        onPress={() => toggleFriendSelection(user)}
+                      >
+                        <View style={styles.friendSearchResultAvatar}>
+                          {user.avatar_url ? (
+                            <Image
+                              source={{ uri: user.avatar_url }}
+                              style={styles.friendSearchResultAvatarImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons name="person" size={24} color="#666666" />
+                          )}
+                        </View>
+                        <View style={styles.friendSearchResultInfo}>
+                          <Text style={styles.friendSearchResultName}>{user.name || 'User'}</Text>
+                          <Text style={styles.friendSearchResultUsername}>@{user.username || 'username'}</Text>
+                        </View>
+                        {isSelected ? (
+                          <Ionicons name="checkmark-circle" size={28} color="#4CAF50" />
+                        ) : (
+                          <Ionicons name="add-circle-outline" size={28} color="#666666" />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })
+                ) : (
+                  <View style={styles.friendsEmptyContainer}>
+                    <Text style={styles.friendsEmptyText}>No friends available</Text>
+                  </View>
+                )
+              )}
+            </ScrollView>
 
             {/* Friends List */}
             <View style={styles.friendsListContainer}>
@@ -1084,6 +1364,27 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     color: '#ffffff',
+  },
+  clearSearchButton: {
+    marginLeft: 8,
+    padding: 4,
+  },
+  friendsLoadingContainer: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  friendsLoadingText: {
+    color: '#888888',
+    fontSize: 14,
+    marginTop: 8,
+  },
+  friendsEmptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  friendsEmptyText: {
+    color: '#666666',
+    fontSize: 14,
   },
   friendSearchLoader: {
     marginLeft: 12,

@@ -30,6 +30,8 @@ export default function ProfileScreen({ navigation }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [streak, setStreak] = useState(0);
   const [dateJoined, setDateJoined] = useState(null);
+  const [friendRequests, setFriendRequests] = useState([]); // Pending friend requests received
+  const [loadingRequests, setLoadingRequests] = useState(false);
   
   // Load profile and goals data
   const loadProfileData = async () => {
@@ -86,6 +88,9 @@ export default function ProfileScreen({ navigation }) {
 
       // Calculate streak
       await calculateStreak(user.id);
+
+      // Load friend requests
+      await loadFriendRequests();
 
       setLoading(false);
     } catch (error) {
@@ -179,6 +184,7 @@ export default function ProfileScreen({ navigation }) {
   useFocusEffect(
     React.useCallback(() => {
       loadProfileData();
+      // loadFriendRequests will be called inside loadProfileData
     }, [])
   );
 
@@ -229,33 +235,149 @@ export default function ProfileScreen({ navigation }) {
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
 
-  // Add friend
+  // Load friend requests (pending requests received by current user)
+  const loadFriendRequests = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      setLoadingRequests(true);
+      const { data, error } = await supabase
+        .from('friend_requests')
+        .select(`
+          id,
+          requester_id,
+          recipient_id,
+          status,
+          created_at,
+          requester:profiles!friend_requests_requester_id_fkey(id, name, username, avatar_url)
+        `)
+        .eq('recipient_id', user.id)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading friend requests:', error);
+        setFriendRequests([]);
+      } else {
+        setFriendRequests(data || []);
+      }
+    } catch (error) {
+      console.error('Error loading friend requests:', error);
+      setFriendRequests([]);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  // Accept friend request
+  const handleAcceptFriendRequest = async (requestId) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Update request status to accepted
+      const { error } = await supabase
+        .from('friend_requests')
+        .update({ status: 'accepted' })
+        .eq('id', requestId)
+        .eq('recipient_id', user.id);
+
+      if (error) {
+        console.error('Error accepting friend request:', error);
+        Alert.alert('Error', 'Failed to accept friend request');
+      } else {
+        // The trigger will automatically create the friendship
+        Alert.alert('Success', 'Friend request accepted!');
+        await loadFriendRequests();
+      }
+    } catch (error) {
+      console.error('Error accepting friend request:', error);
+      Alert.alert('Error', 'Failed to accept friend request');
+    }
+  };
+
+  // Decline friend request
+  const handleDeclineFriendRequest = async (requestId) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Update request status to declined
+      const { error } = await supabase
+        .from('friend_requests')
+        .update({ status: 'declined' })
+        .eq('id', requestId)
+        .eq('recipient_id', user.id);
+
+      if (error) {
+        console.error('Error declining friend request:', error);
+        Alert.alert('Error', 'Failed to decline friend request');
+      } else {
+        Alert.alert('Success', 'Friend request declined');
+        await loadFriendRequests();
+      }
+    } catch (error) {
+      console.error('Error declining friend request:', error);
+      Alert.alert('Error', 'Failed to decline friend request');
+    }
+  };
+
+  // Add friend (send friend request)
   const handleAddFriend = async (friendId) => {
     setAddingFriend(friendId);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // For now, we'll just show an alert since we need to create a friends table
-      // TODO: Create friends table in Supabase and implement friend requests
-      Alert.alert(
-        'Friend Request',
-        'Friend request functionality will be available soon!',
-        [{ text: 'OK' }]
-      );
+      // Check if already friends
+      const { data: friendshipCheck } = await supabase
+        .from('friends')
+        .select('id, user_id, friend_id')
+        .or(`and(user_id.eq.${user.id},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${user.id})`)
+        .limit(1);
 
-      // Future implementation:
-      // const { error } = await supabase
-      //   .from('friends')
-      //   .insert({
-      //     user_id: user.id,
-      //     friend_id: friendId,
-      //     status: 'pending'
-      //   });
-      
+      if (friendshipCheck && friendshipCheck.length > 0) {
+        Alert.alert('Info', 'You are already friends!');
+        setAddingFriend(null);
+        return;
+      }
+
+      // Check if request already exists
+      const { data: existingRequests } = await supabase
+        .from('friend_requests')
+        .select('id, status')
+        .or(`and(requester_id.eq.${user.id},recipient_id.eq.${friendId}),and(requester_id.eq.${friendId},recipient_id.eq.${user.id})`)
+        .limit(1);
+
+      const existingRequest = existingRequests && existingRequests.length > 0 ? existingRequests[0] : null;
+
+      if (existingRequest) {
+        if (existingRequest.status === 'pending') {
+          Alert.alert('Friend Request', 'Friend request already sent!');
+        } else {
+          Alert.alert('Info', 'Friend request was previously declined');
+        }
+      } else {
+        // Send new friend request
+        const { error } = await supabase
+          .from('friend_requests')
+          .insert({
+            requester_id: user.id,
+            recipient_id: friendId,
+            status: 'pending',
+          });
+
+        if (error) {
+          console.error('Error sending friend request:', error);
+          Alert.alert('Error', 'Failed to send friend request');
+        } else {
+          Alert.alert('Success', 'Friend request sent!');
+        }
+      }
     } catch (error) {
       console.error('Error adding friend:', error);
-      Alert.alert('Error', 'Failed to add friend');
+      Alert.alert('Error', 'Failed to send friend request');
     } finally {
       setAddingFriend(null);
     }
@@ -585,6 +707,59 @@ export default function ProfileScreen({ navigation }) {
             </View>
           </View>
         </View>
+
+        {/* Friend Requests Section */}
+        {friendRequests.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Friend Requests</Text>
+            <View style={styles.friendRequestsList}>
+              {friendRequests.map((request) => {
+                const requester = request.requester || {};
+                return (
+                  <View key={request.id} style={styles.friendRequestItem}>
+                    <View style={styles.friendRequestLeft}>
+                      <View style={styles.friendRequestAvatar}>
+                        {requester.avatar_url ? (
+                          <Image
+                            source={{ uri: requester.avatar_url }}
+                            style={styles.friendRequestAvatarImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="person" size={24} color="#666666" />
+                        )}
+                      </View>
+                      <View style={styles.friendRequestInfo}>
+                        <Text style={styles.friendRequestName}>
+                          {requester.name || 'User'}
+                        </Text>
+                        <Text style={styles.friendRequestUsername}>
+                          @{requester.username || 'username'}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.friendRequestActions}>
+                      <TouchableOpacity
+                        style={[styles.friendRequestButton, styles.acceptButton]}
+                        onPress={() => handleAcceptFriendRequest(request.id)}
+                      >
+                        <Ionicons name="checkmark" size={20} color="#ffffff" />
+                        <Text style={styles.friendRequestButtonText}>Accept</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.friendRequestButton, styles.declineButton]}
+                        onPress={() => handleDeclineFriendRequest(request.id)}
+                      >
+                        <Ionicons name="close" size={20} color="#ffffff" />
+                        <Text style={styles.friendRequestButtonText}>Decline</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+        )}
 
         {/* Goal Lists Section */}
         {goalCategories.length > 0 && (
@@ -1582,5 +1757,73 @@ const styles = StyleSheet.create({
     backgroundColor: '#1a1a1a',
     borderWidth: 1,
     borderColor: '#2a2a2a',
+  },
+  friendRequestsList: {
+    gap: 12,
+  },
+  friendRequestItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  friendRequestLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  friendRequestAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#2a2a2a',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  friendRequestAvatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  friendRequestInfo: {
+    flex: 1,
+  },
+  friendRequestName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    marginBottom: 2,
+  },
+  friendRequestUsername: {
+    fontSize: 14,
+    color: '#888888',
+  },
+  friendRequestActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  friendRequestButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 6,
+  },
+  acceptButton: {
+    backgroundColor: '#4CAF50',
+  },
+  declineButton: {
+    backgroundColor: '#ff4444',
+  },
+  friendRequestButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
   },
 });
