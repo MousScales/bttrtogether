@@ -67,13 +67,12 @@ export default function AddGoalsScreen({ navigation, route }) {
       if (listError) throw listError;
       setGoalList(goalListData);
 
-      // Load group goals (goals with goal_type = 'group') - get unique titles from creator's goals
+      // Load group goals (goals with goal_type = 'group') - get unique titles from any user
       const { data: allGroupGoals, error: groupError } = await supabase
         .from('goals')
         .select('title, created_at')
         .eq('goal_list_id', goalListId)
         .eq('goal_type', 'group')
-        .eq('user_id', goalListData.user_id) // Get from creator
         .order('created_at', { ascending: true });
 
       if (groupError) {
@@ -314,24 +313,14 @@ export default function AddGoalsScreen({ navigation, route }) {
           {/* Group Goals Section - Always show if group goals exist */}
           <Text style={styles.goalSectionTitle}>Group Goals (All Members)</Text>
           {groupGoals.length > 0 ? (
-            groupGoals.map((goal) => (
-                <View key={goal.id} style={styles.goalPreviewItem}>
-                  <View style={styles.goalPreviewHeader}>
-                    <Text style={styles.goalPreviewTitle}>{goal.title}</Text>
-                    <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
-                  </View>
-                  
-                  {/* History Squares */}
-                  <View style={goalList?.is_unlimited ? styles.historyGridUnlimited : styles.historyGrid}>
-                    {Array.from({ length: getSquareCount() }).map((_, dayIndex) => (
-                      <View
-                        key={dayIndex}
-                        style={[styles.historySquare, styles.historySquareFuture]}
-                      />
-                    ))}
-                  </View>
+            <View style={styles.groupGoalsListContainer}>
+              {groupGoals.map((goal) => (
+                <View key={goal.id} style={styles.groupGoalBulletItem}>
+                  <Text style={styles.groupGoalBullet}>•</Text>
+                  <Text style={styles.groupGoalBulletText}>{goal.title}</Text>
                 </View>
-              ))
+              ))}
+            </View>
           ) : (
             <Text style={styles.noGoalsText}>No group goals set</Text>
           )}
@@ -405,24 +394,16 @@ export default function AddGoalsScreen({ navigation, route }) {
         </ScrollView>
 
         {/* Buttons */}
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity 
-            style={[styles.skipButton, groupGoals.length === 0 && styles.skipButtonDisabled]}
-            onPress={groupGoals.length > 0 ? handleSkip : () => Alert.alert('Cannot Skip', 'You must add at least one personal goal when there are no group goals.')}
-            disabled={groupGoals.length === 0}
-          >
-            <Text style={[styles.skipButtonText, groupGoals.length === 0 && styles.skipButtonTextDisabled]}>Skip</Text>
-          </TouchableOpacity>
-          
-          {(personalGoals.length > 0 || groupGoals.length > 0) && (
+        {(personalGoals.length > 0 || groupGoals.length > 0) && (
+          <View style={styles.buttonContainer}>
             <TouchableOpacity 
               style={styles.proceedButtonBottom}
               onPress={handleProceed}
             >
               <Text style={styles.proceedButtonText}>CONTINUE</Text>
             </TouchableOpacity>
-          )}
-        </View>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -559,36 +540,10 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   buttonContainer: {
-    flexDirection: 'row',
-    gap: 12,
     paddingBottom: 20,
     marginTop: 20,
   },
-  skipButton: {
-    flex: 1,
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    backgroundColor: '#1a1a1a',
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  skipButtonDisabled: {
-    opacity: 0.5,
-    backgroundColor: '#0f0f0f',
-  },
-  skipButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#888888',
-  },
-  skipButtonTextDisabled: {
-    color: '#444444',
-  },
   proceedButtonBottom: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
@@ -598,7 +553,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#ffffff',
-    letterSpacing: 1.5,
+  },
+  groupGoalsListContainer: {
+    marginBottom: 20,
+    gap: 4,
+  },
+  groupGoalBulletItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  groupGoalBullet: {
+    fontSize: 10,
+    color: '#ffffff',
+    marginTop: 2,
+  },
+  groupGoalBulletText: {
+    fontSize: 10,
+    color: '#ffffff',
+    flex: 1,
+    lineHeight: 14,
     textTransform: 'uppercase',
   },
   punishmentContainer: {

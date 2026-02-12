@@ -554,6 +554,35 @@ export default function CreateGoalListScreen({ navigation, route }) {
           console.error('Error adding participants:', participantsError);
           // Show error but don't block - goal list is already created
           Alert.alert('Warning', 'Goal list created but some participants could not be added. You can add them later.');
+        } else {
+          // Create group goals for all participants (including creator)
+          if (goalListData.groupGoals && goalListData.groupGoals.length > 0) {
+            const allParticipantIds = participants.map(p => p.user_id);
+            const groupGoalsToInsert = [];
+            
+            allParticipantIds.forEach(participantId => {
+              goalListData.groupGoals.forEach(goalTitle => {
+                groupGoalsToInsert.push({
+                  user_id: participantId,
+                  goal_list_id: goalList.id,
+                  title: goalTitle,
+                  goal_type: 'group',
+                  completed: false,
+                });
+              });
+            });
+
+            if (groupGoalsToInsert.length > 0) {
+              const { error: groupGoalsError } = await supabase
+                .from('goals')
+                .insert(groupGoalsToInsert);
+
+              if (groupGoalsError) {
+                console.error('Error creating group goals for participants:', groupGoalsError);
+                // Don't block - goal list is already created
+              }
+            }
+          }
         }
 
         // Update goal list to require payment if consequence type is money

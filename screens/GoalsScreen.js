@@ -244,6 +244,64 @@ export default function GoalsScreen({ navigation }) {
   }, [friendsSearchQuery]);
 
   // Send friend request (instead of directly adding)
+  // Helper function to create group goals for a participant
+  const createGroupGoalsForParticipant = async (userId, goalListId) => {
+    try {
+      // Get creator's group goals for this goal list
+      const { data: goalListData } = await supabase
+        .from('goal_lists')
+        .select('user_id')
+        .eq('id', goalListId)
+        .single();
+
+      if (!goalListData) return;
+
+      // Check if participant already has group goals
+      const { data: existingGroupGoals } = await supabase
+        .from('goals')
+        .select('id')
+        .eq('goal_list_id', goalListId)
+        .eq('user_id', userId)
+        .eq('goal_type', 'group')
+        .limit(1);
+
+      if (existingGroupGoals && existingGroupGoals.length > 0) {
+        // Already has group goals, skip
+        return;
+      }
+
+      // Get creator's group goals
+      const { data: creatorGroupGoals } = await supabase
+        .from('goals')
+        .select('title')
+        .eq('goal_list_id', goalListId)
+        .eq('user_id', goalListData.user_id)
+        .eq('goal_type', 'group')
+        .order('created_at', { ascending: true });
+
+      if (creatorGroupGoals && creatorGroupGoals.length > 0) {
+        // Create group goals for the participant
+        const groupGoalsToInsert = creatorGroupGoals.map(goal => ({
+          user_id: userId,
+          goal_list_id: goalListId,
+          title: goal.title,
+          goal_type: 'group',
+          completed: false,
+        }));
+
+        const { error: groupGoalsError } = await supabase
+          .from('goals')
+          .insert(groupGoalsToInsert);
+
+        if (groupGoalsError) {
+          console.error('Error creating group goals for participant:', groupGoalsError);
+        }
+      }
+    } catch (error) {
+      console.error('Error in createGroupGoalsForParticipant:', error);
+    }
+  };
+
   const handleAddFriendToGoal = async (friend) => {
     if (!currentGoalList || !currentUser) return;
 
@@ -271,6 +329,9 @@ export default function GoalsScreen({ navigation }) {
           console.error('Error adding friend:', error);
           Alert.alert('Error', 'Failed to add friend to goal');
         } else {
+          // Create group goals for the new participant
+          await createGroupGoalsForParticipant(friend.id, currentGoalList.id);
+          
           Alert.alert('Success', 'Friend added to goal!');
           await checkOwnerPaymentStatus();
           await loadAvailableFriends();
@@ -538,21 +599,12 @@ export default function GoalsScreen({ navigation }) {
     if (!currentGoalList) return;
     
     try {
-      // Load group goals from creator
-      const { data: goalListData } = await supabase
-        .from('goal_lists')
-        .select('user_id')
-        .eq('id', currentGoalList.id)
-        .single();
-
-      if (!goalListData) return;
-
+      // Load ALL group goals for this goal list (from any user, since they should all be the same)
       const { data: groupGoalsData, error } = await supabase
         .from('goals')
-        .select('title, created_at')
+        .select('title, created_at, user_id')
         .eq('goal_list_id', currentGoalList.id)
         .eq('goal_type', 'group')
-        .eq('user_id', goalListData.user_id) // Get from creator
         .order('created_at', { ascending: true });
 
       if (error) {
