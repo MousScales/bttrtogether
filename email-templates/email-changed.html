@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email Address Changed - Bttr Together</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+    }
+    .header {
+      background-color: #000000;
+      padding: 40px 30px;
+      text-align: center;
+    }
+    .logo {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 20px;
+      background-color: #1a1a1a;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .app-name {
+      color: #ffffff;
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0;
+    }
+    .content {
+      padding: 50px 40px;
+      background-color: #ffffff;
+    }
+    .greeting {
+      font-size: 24px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0 0 20px 0;
+    }
+    .message {
+      font-size: 16px;
+      line-height: 1.6;
+      color: #333333;
+      margin: 0 0 30px 0;
+    }
+    .success-box {
+      background-color: #d4edda;
+      border-left: 4px solid #4CAF50;
+      padding: 16px 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+    }
+    .success-text {
+      font-size: 14px;
+      color: #155724;
+      margin: 0;
+      line-height: 1.6;
+    }
+    .email-change {
+      background-color: #f8f9fa;
+      padding: 20px;
+      border-radius: 12px;
+      margin: 20px 0;
+      text-align: center;
+    }
+    .email-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #666666;
+      margin: 0 0 8px 0;
+    }
+    .email-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: #000000;
+      margin: 0;
+    }
+    .arrow {
+      font-size: 24px;
+      color: #4CAF50;
+      margin: 10px 0;
+    }
+    .alert-box {
+      background-color: #fff3cd;
+      border-left: 4px solid #ff6b35;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .alert-text {
+      font-size: 15px;
+      color: #856404;
+      margin: 0 0 15px 0;
+      line-height: 1.6;
+    }
+    .button-secondary {
+      display: inline-block;
+      background-color: #ff6b35;
+      color: #ffffff !important;
+      text-decoration: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      text-align: center;
+      margin-top: 10px;
+    }
+    .footer {
+      background-color: #1a1a1a;
+      padding: 30px 40px;
+      text-align: center;
+    }
+    .footer-text {
+      font-size: 14px;
+      color: #888888;
+      margin: 0;
+      line-height: 1.6;
+    }
+    .footer-link {
+      color: #4CAF50;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">
+        <svg width="50" height="50" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="8" cy="6" r="3" fill="#ffffff"/>
+          <circle cx="16" cy="6" r="3" fill="#ffffff"/>
+          <path d="M8 11C5.79 11 4 12.79 4 15V17H12V15C12 12.79 10.21 11 8 11Z" fill="#ffffff"/>
+          <path d="M16 11C13.79 11 12 12.79 12 15V17H20V15C20 12.79 18.21 11 16 11Z" fill="#ffffff"/>
+        </svg>
+      </div>
+      <h1 class="app-name">Bttr Together</h1>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+      <h2 class="greeting">Email Address Changed ✓</h2>
+      
+      <div class="success-box">
+        <p class="success-text">
+          <strong>✓ Your email has been updated</strong><br>
+          The email address for your Bttr Together account has been successfully changed.
+        </p>
+      </div>
+
+      <div class="email-change">
+        <p class="email-label">Previous Email</p>
+        <p class="email-value">{{ .Email }}</p>
+        <p class="arrow">↓</p>
+        <p class="email-label">New Email</p>
+        <p class="email-value">{{ .NewEmail }}</p>
+      </div>
+
+      <p class="message">
+        From now on, use your new email address to sign in to Bttr Together.
+      </p>
+
+      <div class="alert-box">
+        <p class="alert-text">
+          <strong>⚠️ Didn't make this change?</strong><br>
+          If you didn't change your email address, your account may be compromised. Contact us immediately.
+        </p>
+        <a href="mailto:support@bttrtogether.com" class="button-secondary">Contact Support</a>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <p class="footer-text">
+        This is an automated security notification from Bttr Together.<br>
+        You cannot reply to this email.
+      </p>
+      <p class="footer-text" style="margin-top: 20px;">
+        <a href="{{ .SiteURL }}" class="footer-link">Visit Bttr Together</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>
