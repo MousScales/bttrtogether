@@ -71,6 +71,7 @@ export default function GoalsScreen({ navigation }) {
   const [hasPersonalGoals, setHasPersonalGoals] = useState(false); // Track if current user has personal goals
   const [groupGoals, setGroupGoals] = useState([]); // Group goals for the current goal list
   const [participantPersonalGoals, setParticipantPersonalGoals] = useState({}); // { userId: [goals] }
+  const [goalListStarted, setGoalListStarted] = useState(false); // Track if goal list has been started
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
@@ -102,6 +103,9 @@ export default function GoalsScreen({ navigation }) {
   // Reload goals when current goal list changes
   useEffect(() => {
     if (currentGoalList) {
+      // Reset started state when goal list changes
+      setGoalListStarted(false);
+      
       // Run both async functions in parallel for faster loading
       setSwitchingGoal(true);
       Promise.all([
@@ -120,6 +124,20 @@ export default function GoalsScreen({ navigation }) {
       loadAvailableFriends();
     }
   }, [currentGoalList, currentUser, participants.length]);
+  
+  // Refresh payment status periodically for group goals
+  useEffect(() => {
+    if (!currentGoalList || currentGoalList.type !== 'group' || currentGoalList.id === 'hardcoded-group-goal') {
+      return;
+    }
+    
+    // Refresh payment status every 5 seconds for group goals
+    const interval = setInterval(() => {
+      checkOwnerPaymentStatus();
+    }, 5000);
+    
+    return () => clearInterval(interval);
+  }, [currentGoalList]);
 
   // Load available friends (include all friends, mark participants as "already added")
   const loadAvailableFriends = async () => {
@@ -258,15 +276,23 @@ export default function GoalsScreen({ navigation }) {
         return;
       }
       
-      // Update goal list to mark it as started using all_paid field
-      const { error: updateError } = await supabase
-        .from('goal_lists')
-        .update({ all_paid: true })
-        .eq('id', currentGoalList.id)
-        .eq('user_id', user.id);
+      // Update goal list to mark it as started
+      // Try to update all_paid, but if it doesn't exist, we'll use a different approach
+      // For now, we'll just reload the data - the started state can be determined by checking if all participants paid
+      // You can add a 'started_at' timestamp column later if needed
       
-      if (updateError) {
-        throw updateError;
+      // Mark goal list as started
+      setGoalListStarted(true);
+      
+      // Reload the goal list to get updated data
+      const { data: updatedGoalList } = await supabase
+        .from('goal_lists')
+        .select('*')
+        .eq('id', currentGoalList.id)
+        .single();
+      
+      if (updatedGoalList) {
+        setCurrentGoalList(updatedGoalList);
       }
       
       Alert.alert('Success', 'Goal list started! All participants can now track their progress.');
@@ -510,7 +536,7 @@ export default function GoalsScreen({ navigation }) {
         
         let allParticipantsList = [...(participantsData || [])];
         
-        // If creator is not in participants, add them
+        // If creator is not in participants, add them and check their payment status
         if (!creatorInParticipants && creatorId) {
           // Load creator's profile
           const { data: creatorProfile, error: creatorProfileError } = await supabase
@@ -523,11 +549,40 @@ export default function GoalsScreen({ navigation }) {
             console.error('Error loading creator profile:', creatorProfileError);
           }
           
+          // Check creator's payment status
+          let creatorPaymentStatus = 'pending';
+          if (currentGoalList.consequence_type === 'money') {
+            // Check if creator has a successful payment
+            const { data: creatorPayment } = await supabase
+              .from('payments')
+              .select('status')
+              .eq('goal_list_id', currentGoalList.id)
+              .eq('user_id', creatorId)
+              .eq('status', 'succeeded')
+              .maybeSingle();
+            
+            if (creatorPayment) {
+              creatorPaymentStatus = 'paid';
+            }
+          } else {
+            // For punishment goals, check if creator accepted
+            const { data: creatorParticipant } = await supabase
+              .from('group_goal_participants')
+              .select('payment_status')
+              .eq('goal_list_id', currentGoalList.id)
+              .eq('user_id', creatorId)
+              .maybeSingle();
+            
+            if (creatorParticipant) {
+              creatorPaymentStatus = creatorParticipant.payment_status;
+            }
+          }
+          
           allParticipantsList.unshift({
             id: `creator-${creatorId}`,
             user_id: creatorId,
             goal_list_id: currentGoalList.id,
-            payment_status: 'pending',
+            payment_status: creatorPaymentStatus,
             profile: creatorProfile || null,
           });
         }
@@ -633,6 +688,13 @@ export default function GoalsScreen({ navigation }) {
   // Load group goals and participant personal goals for the current goal list
   const loadGroupGoals = async () => {
     if (!currentGoalList) return;
+    
+    // Skip database queries for hardcoded goal
+    if (currentGoalList.id === 'hardcoded-group-goal') {
+      setGroupGoals([]);
+      setParticipantPersonalGoals({});
+      return;
+    }
     
     try {
       // Load ALL group goals for this goal list (from any user, since they should all be the same)
@@ -799,8 +861,9 @@ export default function GoalsScreen({ navigation }) {
           return;
         }
         
-        // Check if goal list is started (all_paid = true for group goals)
-        const isStarted = currentGoalList.type === 'group' && currentGoalList.all_paid === true;
+        // Check if goal list is started (all participants have paid for group goals)
+        // We determine this by checking if all participants have paid_status = 'paid'
+        const isStarted = currentGoalList.type === 'group' && allParticipantsPaid;
         
         let data;
         let allParticipantsGoals = [];
@@ -894,14 +957,50 @@ export default function GoalsScreen({ navigation }) {
 
           // Load past completion records to populate history
           let pastCompletions = {};
+          let pastCompletionsWithValidation = {}; // Track which completions are validated
           if (goalIdsToCheck.length > 0) {
             const { data: pastCompletionsData } = await supabase
               .from('goal_completions')
-              .select('goal_id, completed_at, user_id, proof_url')
+              .select('id, goal_id, completed_at, user_id, proof_url')
               .in('goal_id', goalIdsToCheck)
               .lt('completed_at', todayStr);
           
           if (pastCompletionsData) {
+            // Load validations for all past completions
+            const completionIds = pastCompletionsData.map(c => c.id);
+            let validationsMap = {};
+            if (completionIds.length > 0 && currentGoalList.type === 'group') {
+              const { data: validationsData } = await supabase
+                .from('goal_validations')
+                .select('goal_completion_id')
+                .in('goal_completion_id', completionIds);
+              
+              // Count validations per completion
+              if (validationsData) {
+                validationsData.forEach(v => {
+                  if (!validationsMap[v.goal_completion_id]) {
+                    validationsMap[v.goal_completion_id] = 0;
+                  }
+                  validationsMap[v.goal_completion_id]++;
+                });
+              }
+            }
+            
+            // Get total validators count for group goals
+            let totalValidators = 0;
+            if (currentGoalList.type === 'group') {
+              const { data: participantsData } = await supabase
+                .from('group_goal_participants')
+                .select('user_id')
+                .eq('goal_list_id', currentGoalList.id);
+              
+              const participantIds = [
+                currentGoalList.user_id,
+                ...(participantsData || []).map(p => p.user_id)
+              ];
+              totalValidators = [...new Set(participantIds)].length;
+            }
+            
             pastCompletionsData.forEach(c => {
               const dateStr = c.completed_at.includes('T') ? c.completed_at.split('T')[0] : c.completed_at;
               const key = isStarted && currentGoalList.type === 'group' 
@@ -909,16 +1008,47 @@ export default function GoalsScreen({ navigation }) {
                 : c.goal_id;
               if (!pastCompletions[key]) {
                 pastCompletions[key] = new Set();
+                pastCompletionsWithValidation[key] = new Set();
               }
               pastCompletions[key].add(dateStr);
+              
+              // Check if this completion is validated (for group goals)
+              const isValidated = currentGoalList.type === 'group' 
+                ? (validationsMap[c.id] || 0) >= totalValidators && totalValidators > 0
+                : true; // Personal goals are always "validated"
+              
+              if (isValidated) {
+                pastCompletionsWithValidation[key].add(dateStr);
+              }
             });
           }
         }
 
         // If started group goal, transform all participants' goals
-        let goalsToTransform = isStarted && currentGoalList.type === 'group' 
-          ? allParticipantsGoals 
-          : data;
+        // But for group goals, only show unique ones (one per title, not one per user)
+        let goalsToTransform = [];
+        if (isStarted && currentGoalList.type === 'group') {
+          // Separate group goals and personal goals
+          const groupGoalsMap = new Map(); // title -> goal (keep first occurrence)
+          const personalGoalsList = [];
+          
+          allParticipantsGoals.forEach(goal => {
+            if (goal.goal_type === 'group') {
+              // For group goals, only keep one per unique title
+              if (!groupGoalsMap.has(goal.title)) {
+                groupGoalsMap.set(goal.title, goal);
+              }
+            } else {
+              // Personal goals - include all of them
+              personalGoalsList.push(goal);
+            }
+          });
+          
+          // Combine unique group goals with all personal goals
+          goalsToTransform = [...Array.from(groupGoalsMap.values()), ...personalGoalsList];
+        } else {
+          goalsToTransform = data;
+        }
         
         // Transform data to match existing format
         const transformedGoals = await Promise.all(goalsToTransform.map(async (goal) => {
@@ -955,7 +1085,11 @@ export default function GoalsScreen({ navigation }) {
               
               const dayIndex = Math.floor((completionDate - createdDate) / (1000 * 60 * 60 * 24));
               if (dayIndex >= 0 && dayIndex < history.length && dayIndex < currentDayIndex) {
-                history[dayIndex] = true;
+                // Only mark as completed if validated (for group goals) or if it's a personal goal
+                const isValidated = pastCompletionsWithValidation[pastCompletionsKey]?.has(dateStr) || goal.goal_type === 'personal';
+                if (isValidated) {
+                  history[dayIndex] = true;
+                }
               }
             });
           }
@@ -977,16 +1111,52 @@ export default function GoalsScreen({ navigation }) {
           // Check if there's a post (completion with proof) for today
           let hasProof = false;
           let caption = null;
+          let completionId = null;
+          let validatedCount = 0;
+          let totalValidators = 0;
+          let isValidated = false;
+          
           if (isCompletedToday) {
             const { data: todayCompletion } = await supabase
               .from('goal_completions')
-              .select('proof_url')
+              .select('id, proof_url')
               .eq('goal_id', goal.id)
               .eq('user_id', goal.user_id)
               .eq('completed_at', todayStr)
               .single();
             
             hasProof = !!todayCompletion?.proof_url;
+            completionId = todayCompletion?.id;
+            
+            // Load validation count if completion exists
+            if (completionId) {
+              // Count total validators (participants in the goal list)
+              if (currentGoalList.type === 'group') {
+                const { data: participantsData } = await supabase
+                  .from('group_goal_participants')
+                  .select('user_id')
+                  .eq('goal_list_id', currentGoalList.id);
+                
+                const participantIds = [
+                  currentGoalList.user_id,
+                  ...(participantsData || []).map(p => p.user_id)
+                ];
+                totalValidators = [...new Set(participantIds)].length;
+                
+                // Count actual validations
+                const { data: validations } = await supabase
+                  .from('goal_validations')
+                  .select('validator_id')
+                  .eq('goal_completion_id', completionId);
+                
+                validatedCount = validations?.length || 0;
+                
+                // Check if current user has validated
+                if (user && validations) {
+                  isValidated = validations.some(v => v.validator_id === user.id);
+                }
+              }
+            }
             // TODO: Load caption from posts table if you have one
           }
           
@@ -996,8 +1166,10 @@ export default function GoalsScreen({ navigation }) {
             checked: isCompletedToday,
             viewers: [],
             type: 'goal',
-            validated: 0,
-            totalViewers: 0,
+            validated: validatedCount, // Store actual validation count
+            totalViewers: totalValidators,
+            completionId: completionId, // Store completion ID for validation
+            isValidated: isValidated, // Store if current user has validated
             completionHistory: history,
             color: getRandomColor(),
             goal_list_type: currentGoalList.type,
@@ -1025,6 +1197,11 @@ export default function GoalsScreen({ navigation }) {
         });
         
         setGoals(sortedGoals);
+        
+        // If goals exist and it's a group goal, mark as started
+        if (sortedGoals.length > 0 && currentGoalList.type === 'group' && !goalListStarted) {
+          setGoalListStarted(true);
+        }
       }
     } catch (error) {
       console.error('Error loading goals:', error);
@@ -1335,12 +1512,75 @@ export default function GoalsScreen({ navigation }) {
     return colors[Math.floor(Math.random() * colors.length)];
   };
 
-  const toggleValidation = (id) => {
-    setGoals(goals.map(item => 
-      item.id === id
-        ? { ...item, validated: item.validated > 0 ? 0 : 1 } 
-        : item
-    ));
+  const toggleValidation = async (id) => {
+    const goal = goals.find(g => g.id === id);
+    if (!goal || !goal.completionId) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      const isCurrentlyValidated = goal.isValidated;
+      
+      if (isCurrentlyValidated) {
+        // Remove validation
+        const { error } = await supabase
+          .from('goal_validations')
+          .delete()
+          .eq('goal_completion_id', goal.completionId)
+          .eq('validator_id', user.id);
+        
+        if (!error) {
+          // Reload validation count
+          const { data: validations } = await supabase
+            .from('goal_validations')
+            .select('validator_id')
+            .eq('goal_completion_id', goal.completionId);
+          
+          const newValidatedCount = validations?.length || 0;
+          
+          setGoals(goals.map(item => 
+            item.id === id
+              ? { 
+                  ...item, 
+                  validated: newValidatedCount,
+                  isValidated: false
+                } 
+              : item
+          ));
+        }
+      } else {
+        // Add validation
+        const { error } = await supabase
+          .from('goal_validations')
+          .insert({
+            goal_completion_id: goal.completionId,
+            validator_id: user.id,
+          });
+        
+        if (!error) {
+          // Reload validation count
+          const { data: validations } = await supabase
+            .from('goal_validations')
+            .select('validator_id')
+            .eq('goal_completion_id', goal.completionId);
+          
+          const newValidatedCount = validations?.length || 0;
+          
+          setGoals(goals.map(item => 
+            item.id === id
+              ? { 
+                  ...item, 
+                  validated: newValidatedCount,
+                  isValidated: true
+                } 
+              : item
+          ));
+        }
+      }
+    } catch (error) {
+      console.error('Error toggling validation:', error);
+    }
   };
 
   const toggleGoal = async (id) => {
@@ -1484,12 +1724,106 @@ export default function GoalsScreen({ navigation }) {
             .in('id', uniqueParticipantIds);
           
           if (profiles) {
-            const friendsList = profiles.map(profile => ({
-              id: profile.id,
-              emoji: profile.avatar_url || '👤',
-              name: profile.name || 'User',
-              progress: 0.5, // TODO: Calculate actual progress
+            // Calculate progress for each participant
+            const friendsList = await Promise.all(profiles.map(async (profile) => {
+              // Get all goals for this user in this goal list
+              const { data: userGoals } = await supabase
+                .from('goals')
+                .select('id, goal_type')
+                .eq('goal_list_id', currentGoalList.id)
+                .eq('user_id', profile.id);
+              
+              const totalGoals = userGoals?.length || 0;
+              
+              if (totalGoals === 0) {
+                return {
+                  id: profile.id,
+                  emoji: profile.avatar_url || '👤',
+                  name: profile.name || 'User',
+                  progress: 0,
+                };
+              }
+              
+              // Get today's date
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const todayStr = today.toISOString().split('T')[0];
+              
+              // Count completed goals (validated for group goals)
+              let completedCount = 0;
+              
+              if (userGoals && userGoals.length > 0) {
+                const goalIds = userGoals.map(g => g.id);
+                
+                // Get today's completions
+                const { data: todayCompletions } = await supabase
+                  .from('goal_completions')
+                  .select('id, goal_id')
+                  .in('goal_id', goalIds)
+                  .eq('user_id', profile.id)
+                  .eq('completed_at', todayStr);
+                
+                if (todayCompletions && todayCompletions.length > 0) {
+                  const completionIds = todayCompletions.map(c => c.id);
+                  
+                  // For group goals, check if validated
+                  const groupGoalIds = userGoals.filter(g => g.goal_type === 'group').map(g => g.id);
+                  const personalGoalIds = userGoals.filter(g => g.goal_type === 'personal').map(g => g.id);
+                  
+                  // Count validated group goals
+                  if (groupGoalIds.length > 0) {
+                    const groupCompletions = todayCompletions.filter(c => groupGoalIds.includes(c.goal_id));
+                    if (groupCompletions.length > 0) {
+                      const { data: validations } = await supabase
+                        .from('goal_validations')
+                        .select('goal_completion_id')
+                        .in('goal_completion_id', groupCompletions.map(c => c.id));
+                      
+                      // Get total validators
+                      const { data: participantsData } = await supabase
+                        .from('group_goal_participants')
+                        .select('user_id')
+                        .eq('goal_list_id', currentGoalList.id);
+                      
+                      const participantIds = [
+                        currentGoalList.user_id,
+                        ...(participantsData || []).map(p => p.user_id)
+                      ];
+                      const totalValidators = [...new Set(participantIds)].length;
+                      
+                      // Count validations per completion
+                      const validationCounts = {};
+                      if (validations) {
+                        validations.forEach(v => {
+                          validationCounts[v.goal_completion_id] = (validationCounts[v.goal_completion_id] || 0) + 1;
+                        });
+                      }
+                      
+                      // Count validated group goals
+                      groupCompletions.forEach(c => {
+                        if ((validationCounts[c.id] || 0) >= totalValidators && totalValidators > 0) {
+                          completedCount++;
+                        }
+                      });
+                    }
+                  }
+                  
+                  // Count personal goals (always count as completed if they have a completion)
+                  const personalCompletions = todayCompletions.filter(c => personalGoalIds.includes(c.goal_id));
+                  completedCount += personalCompletions.length;
+                }
+              }
+              
+              const progress = totalGoals > 0 ? completedCount / totalGoals : 0;
+              
+              return {
+                id: profile.id,
+                emoji: profile.avatar_url || '👤',
+                name: profile.name || 'User',
+                progress: Math.min(progress, 1), // Cap at 1
+              };
             }));
+            
             setFriends(friendsList);
           } else {
             setFriends([]);
@@ -1616,40 +1950,38 @@ export default function GoalsScreen({ navigation }) {
                 key={friend.id}
                 style={[
                   styles.friendItem,
-                    {
-                      transform: [{ translateY }],
-                    },
+                  {
+                    transform: [{ translateY }],
+                  },
                 ]}
-                >
-                  <View style={styles.avatarWithProgress}>
-                    <Svg width={64} height={64} style={styles.progressRing}>
-                      <Circle
-                        cx={32}
-                        cy={32}
-                        r={30}
-                        stroke="#2a2a2a"
-                        strokeWidth={3}
-                        fill="none"
-                      />
-                      <Circle
-                        cx={32}
-                        cy={32}
-                        r={30}
-                        stroke="#4CAF50"
-                        strokeWidth={3}
-                        fill="none"
-                        strokeDasharray={2 * Math.PI * 30}
-                        strokeDashoffset={2 * Math.PI * 30 * (1 - friend.progress)}
-                        strokeLinecap="round"
-                        rotation="-90"
-                        origin="32, 32"
-                      />
-                    </Svg>
-                    <View style={styles.avatarCircle}>
-                      <Text style={styles.avatarEmoji}>{friend.emoji}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.friendName}>{friend.name}</Text>
+              >
+                <View style={styles.avatarWithProgress}>
+                  <Svg width={64} height={64} style={styles.progressRing}>
+                    <Circle
+                      cx={32}
+                      cy={32}
+                      r={30}
+                      stroke="#2a2a2a"
+                      strokeWidth={3}
+                      fill="none"
+                    />
+                    <Circle
+                      cx={32}
+                      cy={32}
+                      r={30}
+                      stroke="#4CAF50"
+                      strokeWidth={3}
+                      fill="none"
+                      strokeDasharray={2 * Math.PI * 30}
+                      strokeDashoffset={2 * Math.PI * 30 * (1 - friend.progress)}
+                      strokeLinecap="round"
+                      rotation="-90"
+                      origin="32, 32"
+                    />
+                  </Svg>
+                  <Text style={styles.avatarEmoji}>{friend.emoji}</Text>
+                </View>
+                <Text style={styles.friendName}>{friend.name}</Text>
               </Animated.View>
             );
           })}
@@ -1714,7 +2046,12 @@ export default function GoalsScreen({ navigation }) {
                     }}
                     style={{ flex: 1 }}
                   >
-                    <Text style={styles.goalTitleText}>{item.title}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                      <Text style={styles.goalTitleText}>{item.title.toUpperCase()}</Text>
+                      <Text style={styles.goalTypeLabel}>
+                        {' '}{item.goal_type === 'group' ? '- group goal' : '- personal goal'}
+                      </Text>
+                    </View>
                   </TouchableOpacity>
                     <TouchableOpacity 
                       style={styles.statusContainer}
@@ -1722,9 +2059,15 @@ export default function GoalsScreen({ navigation }) {
                     >
                       <Text style={[
                         styles.statusText,
-                        item.checked && styles.statusTextCompleted
+                        item.checked && item.goal_list_type === 'group' && item.validated >= item.totalViewers && item.totalViewers > 0 && styles.statusTextCompleted,
+                        item.checked && item.goal_list_type === 'group' && (item.validated < item.totalViewers || item.totalViewers === 0) && styles.statusTextWaiting,
+                        item.checked && item.goal_list_type === 'personal' && styles.statusTextCompleted
                       ]}>
-                      {item.checked ? 'COMPLETED' : 'COMPLETE'}
+                      {item.checked 
+                        ? (item.goal_list_type === 'group' 
+                          ? (item.validated >= item.totalViewers && item.totalViewers > 0 ? 'COMPLETED' : 'WAITING FOR VALIDATION')
+                          : 'COMPLETED')
+                        : 'COMPLETE'}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -1767,7 +2110,17 @@ export default function GoalsScreen({ navigation }) {
                         {columnBoxes.map((box) => {
                           const isToday = box.originalIndex === item.currentDayIndex;
                           const isFuture = box.originalIndex > item.currentDayIndex;
-                          const isCompleted = box.status === true;
+                          
+                          // For past days: if history shows true, it means it was validated (we only add validated to history)
+                          // For today: check if it's validated (for group goals) or completed (for personal goals)
+                          const isPastDayCompleted = !isToday && box.originalIndex < item.currentDayIndex && box.status === true;
+                          const isTodayAndValidated = isToday && item.checked && 
+                            (item.goal_list_type === 'personal' || 
+                             (item.goal_list_type === 'group' && item.validated >= item.totalViewers && item.totalViewers > 0));
+                          
+                          const shouldShowCompleted = isToday 
+                            ? isTodayAndValidated 
+                            : isPastDayCompleted;
                         
                         return (
                           <View 
@@ -1776,7 +2129,7 @@ export default function GoalsScreen({ navigation }) {
                               styles.historySquare,
                               isFuture 
                                 ? styles.historySquareFuture
-                                : isCompleted 
+                                : shouldShowCompleted 
                                   ? { backgroundColor: item.color || '#4CAF50' }
                                   : styles.historySquareIncomplete,
                               isToday && styles.historySquareToday
@@ -1857,9 +2210,9 @@ export default function GoalsScreen({ navigation }) {
                   >
                     <Text style={[
                         styles.validateButtonTextOnlyText,
-                        item.validated > 0 && styles.validateButtonTextOnlyTextActive
+                        item.isValidated && styles.validateButtonTextOnlyTextActive
                     ]}>
-                        {item.validated > 0 ? 'Validated' : 'Validate'}
+                        {item.isValidated ? 'Validated' : 'Validate'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -2099,6 +2452,10 @@ export default function GoalsScreen({ navigation }) {
         
         const otherParticipants = participantsForThisList.filter(p => p.user_id !== currentUser?.id);
         const hasOtherParticipants = otherParticipants.length > 0;
+        
+        // Don't show overlay if goal list has been started (either by state or if goals exist)
+        if (goalListStarted || goals.length > 0) return null;
+        
         const showOverlay = !allParticipantsPaid || !hasOtherParticipants;
         
         // Always show overlay if it's a group goal (either to pay/accept or to start)
@@ -2845,44 +3202,47 @@ const styles = StyleSheet.create({
   friendsScrollView: {
     paddingTop: 30,
     marginBottom: 20,
+    backgroundColor: 'transparent', // Ensure no background
   },
   friendsContainer: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingHorizontal: 20,
     gap: 40,
+    backgroundColor: 'transparent', // Ensure no background
   },
   friendItem: {
     alignItems: 'center',
-    width: 56,
+    justifyContent: 'flex-start',
+    width: 64,
+    backgroundColor: 'transparent',
+    padding: 0,
+    margin: 0,
   },
   avatarWithProgress: {
     width: 64,
     height: 64,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
     marginBottom: 8,
   },
   progressRing: {
     position: 'absolute',
-  },
-  avatarCircle: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: '#1a1a1a',
-    borderWidth: 2,
-    borderColor: '#333333',
-    alignItems: 'center',
-    justifyContent: 'center',
+    top: 0,
+    left: 0,
   },
   avatarEmoji: {
-    fontSize: 28,
+    fontSize: 32,
+    zIndex: 1,
   },
   friendName: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '400',
     color: '#ffffff',
+    textAlign: 'center',
+    marginTop: 4,
+    width: 64,
   },
   goalsListContainer: {
     paddingHorizontal: 20,
@@ -3125,6 +3485,9 @@ const styles = StyleSheet.create({
   statusTextCompleted: {
     color: '#4CAF50',
   },
+  statusTextWaiting: {
+    color: '#FF9800',
+  },
   personalGoalsContainer: {
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -3145,7 +3508,11 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '600',
     color: '#ffffff',
-    flex: 1,
+  },
+  goalTypeLabel: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#888888',
     letterSpacing: 1.5,
     textTransform: 'uppercase',
   },
