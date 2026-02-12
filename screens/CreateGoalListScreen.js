@@ -25,7 +25,9 @@ export default function CreateGoalListScreen({ navigation, route }) {
   const [goalListData, setGoalListData] = useState({
     type: '', // 'personal' or 'group'
     name: '',
-    goals: [],
+    goals: [], // Will be split into groupGoals and personalGoals
+    groupGoals: [], // Goals all members must do
+    personalGoals: [], // Goals only creator does
     deadline: '',
     consequenceType: '', // 'money' or 'punishment'
     consequence: '',
@@ -33,7 +35,8 @@ export default function CreateGoalListScreen({ navigation, route }) {
     friends: [], // Selected friends for group goals
   });
 
-  const [currentGoal, setCurrentGoal] = useState('');
+  const [currentGroupGoal, setCurrentGroupGoal] = useState('');
+  const [currentPersonalGoal, setCurrentPersonalGoal] = useState('');
   const [selectedDuration, setSelectedDuration] = useState(28);
   const [isUnlimited, setIsUnlimited] = useState(true); // Default to lifetime
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -45,10 +48,11 @@ export default function CreateGoalListScreen({ navigation, route }) {
   const [searchingFriends, setSearchingFriends] = useState(false);
   const [availableFriends, setAvailableFriends] = useState([]); // All available friends to add
   const proceedAnim = useRef(new Animated.Value(0)).current;
-  const addGoalButtonAnim = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const addFriendsButtonAnim = useRef(new Animated.Value(0)).current;
   const proceedFriendsAnim = useRef(new Animated.Value(0)).current;
+  const addGroupGoalButtonAnim = useRef(new Animated.Value(0)).current;
+  const addPersonalGoalButtonAnim = useRef(new Animated.Value(0)).current;
 
   const getSquareCount = () => {
     if (isUnlimited) {
@@ -363,17 +367,38 @@ export default function CreateGoalListScreen({ navigation, route }) {
     }
   };
 
-  const addGoal = () => {
-    if (currentGoal.trim()) {
+  const addGroupGoal = () => {
+    if (currentGroupGoal.trim()) {
       setGoalListData({
         ...goalListData,
-        goals: [...goalListData.goals, currentGoal.trim()],
+        groupGoals: [...goalListData.groupGoals, currentGroupGoal.trim()],
+        goals: [...goalListData.goals, { title: currentGroupGoal.trim(), type: 'group' }],
       });
-      setCurrentGoal('');
+      setCurrentGroupGoal('');
       
       // Reset and re-trigger animation
-      addGoalButtonAnim.setValue(0);
-      Animated.spring(addGoalButtonAnim, {
+      addGroupGoalButtonAnim.setValue(0);
+      Animated.spring(addGroupGoalButtonAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 7,
+      }).start();
+    }
+  };
+
+  const addPersonalGoal = () => {
+    if (currentPersonalGoal.trim()) {
+      setGoalListData({
+        ...goalListData,
+        personalGoals: [...goalListData.personalGoals, currentPersonalGoal.trim()],
+        goals: [...goalListData.goals, { title: currentPersonalGoal.trim(), type: 'personal' }],
+      });
+      setCurrentPersonalGoal('');
+      
+      // Reset and re-trigger animation
+      addPersonalGoalButtonAnim.setValue(0);
+      Animated.spring(addPersonalGoalButtonAnim, {
         toValue: 1,
         useNativeDriver: true,
         tension: 50,
@@ -383,25 +408,59 @@ export default function CreateGoalListScreen({ navigation, route }) {
   };
 
   useEffect(() => {
-    if (currentGoal.trim() !== '') {
-      Animated.spring(addGoalButtonAnim, {
+    if (currentGroupGoal.trim() !== '') {
+      Animated.spring(addGroupGoalButtonAnim, {
         toValue: 1,
         useNativeDriver: true,
         tension: 50,
         friction: 7,
       }).start();
     } else {
-      Animated.timing(addGoalButtonAnim, {
+      Animated.timing(addGroupGoalButtonAnim, {
         toValue: 0,
         duration: 200,
         useNativeDriver: true,
       }).start();
     }
-  }, [currentGoal]);
+  }, [currentGroupGoal]);
 
-  const removeGoal = (index) => {
-    const newGoals = goalListData.goals.filter((_, i) => i !== index);
-    setGoalListData({ ...goalListData, goals: newGoals });
+  useEffect(() => {
+    if (currentPersonalGoal.trim() !== '') {
+      Animated.spring(addPersonalGoalButtonAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 7,
+      }).start();
+    } else {
+      Animated.timing(addPersonalGoalButtonAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [currentPersonalGoal]);
+
+  const removeGoal = (index, goalType) => {
+    if (goalType === 'group') {
+      const newGroupGoals = goalListData.groupGoals.filter((_, i) => i !== index);
+      const newGoals = goalListData.goals.filter((g, i) => {
+        if (typeof g === 'string') {
+          return goalListData.groupGoals.indexOf(g) !== index;
+        }
+        return !(g.type === 'group' && goalListData.groupGoals.indexOf(g.title) === index);
+      });
+      setGoalListData({ ...goalListData, groupGoals: newGroupGoals, goals: newGoals });
+    } else {
+      const newPersonalGoals = goalListData.personalGoals.filter((_, i) => i !== index);
+      const newGoals = goalListData.goals.filter((g, i) => {
+        if (typeof g === 'string') {
+          return goalListData.personalGoals.indexOf(g) !== index;
+        }
+        return !(g.type === 'personal' && goalListData.personalGoals.indexOf(g.title) === index);
+      });
+      setGoalListData({ ...goalListData, personalGoals: newPersonalGoals, goals: newGoals });
+    }
   };
 
   const handleComplete = async () => {
@@ -438,13 +497,24 @@ export default function CreateGoalListScreen({ navigation, route }) {
         throw listError;
       }
 
-      // Create individual goals
-      const goalsToInsert = goalListData.goals.map(goalTitle => ({
+      // Create individual goals with goal_type
+      const groupGoalsToInsert = goalListData.groupGoals.map(goalTitle => ({
         user_id: user.id,
         goal_list_id: goalList.id,
         title: goalTitle,
+        goal_type: 'group',
         completed: false,
       }));
+      
+      const personalGoalsToInsert = goalListData.personalGoals.map(goalTitle => ({
+        user_id: user.id,
+        goal_list_id: goalList.id,
+        title: goalTitle,
+        goal_type: 'personal',
+        completed: false,
+      }));
+      
+      const goalsToInsert = [...groupGoalsToInsert, ...personalGoalsToInsert];
 
       const { error: goalsError } = await supabase
         .from('goals')
@@ -737,11 +807,86 @@ export default function CreateGoalListScreen({ navigation, route }) {
 
             {/* Goals List */}
             <ScrollView style={styles.goalsPreviewList} contentContainerStyle={styles.goalsPreviewContent}>
-              {goalListData.goals.map((goal, index) => (
-                <View key={index} style={styles.goalPreviewItem}>
+              {/* Group Goals Section - Only for group goal lists */}
+              {goalListData.type === 'group' && (
+                <>
+                  <Text style={styles.goalSectionTitle}>Group Goals (All Members)</Text>
+                  {goalListData.groupGoals.map((goal, index) => (
+                    <View key={`group-${index}`} style={styles.goalPreviewItem}>
+                      <View style={styles.goalPreviewHeader}>
+                        <Text style={styles.goalPreviewTitle}>{goal}</Text>
+                        <TouchableOpacity onPress={() => removeGoal(index, 'group')}>
+                          <Ionicons name="close-circle" size={20} color="#FF4444" />
+                        </TouchableOpacity>
+                      </View>
+                      
+                      {/* History Squares */}
+                      <View style={isUnlimited ? styles.historyGridUnlimited : styles.historyGrid}>
+                        {Array.from({ length: getSquareCount() }).map((_, dayIndex) => (
+                          <View
+                            key={dayIndex}
+                            style={[styles.historySquare, styles.historySquareFuture]}
+                          />
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+
+                  {/* Add Group Goal Input */}
+                  <View style={styles.addGoalPreview}>
+                    <TextInput
+                      style={styles.goalNameInput}
+                      value={currentGroupGoal}
+                      onChangeText={setCurrentGroupGoal}
+                      onSubmitEditing={addGroupGoal}
+                      placeholder="Add group goal..."
+                      placeholderTextColor="#666666"
+                    />
+                    
+                    {/* History Squares for new goal */}
+                    <View style={isUnlimited ? styles.historyGridUnlimited : styles.historyGrid}>
+                      {Array.from({ length: getSquareCount() }).map((_, dayIndex) => (
+                        <View
+                          key={dayIndex}
+                          style={[styles.historySquare, styles.historySquareFuture]}
+                        />
+                      ))}
+                    </View>
+
+                    <Animated.View
+                      style={[
+                        styles.addGoalButtonContainer,
+                        {
+                          opacity: addGroupGoalButtonAnim,
+                          transform: [
+                            {
+                              translateY: addGroupGoalButtonAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [20, 0],
+                              }),
+                            },
+                          ],
+                        },
+                      ]}
+                      pointerEvents={currentGroupGoal.trim() !== '' ? 'auto' : 'none'}
+                    >
+                      <TouchableOpacity style={styles.addGoalButton} onPress={addGroupGoal}>
+                        <Text style={styles.addGoalButtonText}>ADD GOAL</Text>
+                      </TouchableOpacity>
+                    </Animated.View>
+                  </View>
+                </>
+              )}
+
+              {/* Personal Goals Section */}
+              <Text style={styles.goalSectionTitle}>
+                {goalListData.type === 'group' ? 'Personal Goals (Only You)' : 'Your Goals'}
+              </Text>
+              {goalListData.personalGoals.map((goal, index) => (
+                <View key={`personal-${index}`} style={styles.goalPreviewItem}>
                   <View style={styles.goalPreviewHeader}>
                     <Text style={styles.goalPreviewTitle}>{goal}</Text>
-                    <TouchableOpacity onPress={() => removeGoal(index)}>
+                    <TouchableOpacity onPress={() => removeGoal(index, 'personal')}>
                       <Ionicons name="close-circle" size={20} color="#FF4444" />
                     </TouchableOpacity>
                   </View>
@@ -758,13 +903,15 @@ export default function CreateGoalListScreen({ navigation, route }) {
                 </View>
               ))}
 
-              {/* Add New Goal Input */}
+              {/* Add Personal Goal Input */}
               <View style={styles.addGoalPreview}>
                 <TextInput
                   style={styles.goalNameInput}
-                  value={currentGoal}
-                  onChangeText={setCurrentGoal}
-                  onSubmitEditing={addGoal}
+                  value={currentPersonalGoal}
+                  onChangeText={setCurrentPersonalGoal}
+                  onSubmitEditing={addPersonalGoal}
+                  placeholder="Add personal goal..."
+                  placeholderTextColor="#666666"
                 />
                 
                 {/* History Squares for new goal */}
@@ -781,10 +928,10 @@ export default function CreateGoalListScreen({ navigation, route }) {
                   style={[
                     styles.addGoalButtonContainer,
                     {
-                      opacity: addGoalButtonAnim,
+                      opacity: addPersonalGoalButtonAnim,
                       transform: [
                         {
-                          translateY: addGoalButtonAnim.interpolate({
+                          translateY: addPersonalGoalButtonAnim.interpolate({
                             inputRange: [0, 1],
                             outputRange: [20, 0],
                           }),
@@ -792,16 +939,16 @@ export default function CreateGoalListScreen({ navigation, route }) {
                       ],
                     },
                   ]}
-                  pointerEvents={currentGoal.trim() !== '' ? 'auto' : 'none'}
+                  pointerEvents={currentPersonalGoal.trim() !== '' ? 'auto' : 'none'}
                 >
-                  <TouchableOpacity style={styles.addGoalButton} onPress={addGoal}>
+                  <TouchableOpacity style={styles.addGoalButton} onPress={addPersonalGoal}>
                     <Text style={styles.addGoalButtonText}>ADD GOAL</Text>
                   </TouchableOpacity>
                 </Animated.View>
               </View>
             </ScrollView>
 
-            {goalListData.goals.length > 0 && (
+            {(goalListData.groupGoals.length > 0 || goalListData.personalGoals.length > 0) && (
               <TouchableOpacity 
                 style={styles.proceedButtonBottom}
                 onPress={handleNext}
@@ -1953,6 +2100,42 @@ const styles = StyleSheet.create({
     color: '#888888',
   },
   deadlineOptionTextSelected: {
+    color: '#ffffff',
+  },
+  goalSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginTop: 24,
+    marginBottom: 16,
+  },
+  goalTypeSelector: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  goalTypeButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    alignItems: 'center',
+  },
+  goalTypeButtonActive: {
+    backgroundColor: '#4CAF50',
+    borderColor: '#4CAF50',
+  },
+  goalTypeButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#888888',
+  },
+  goalTypeButtonTextActive: {
     color: '#ffffff',
   },
   orText: {

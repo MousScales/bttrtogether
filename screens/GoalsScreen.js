@@ -68,6 +68,9 @@ export default function GoalsScreen({ navigation }) {
   const [friendsSearchResults, setFriendsSearchResults] = useState([]); // Search results
   const [searchingFriends, setSearchingFriends] = useState(false); // Loading state for search
   const [switchingGoal, setSwitchingGoal] = useState(false); // Loading state for goal switching
+  const [hasPersonalGoals, setHasPersonalGoals] = useState(false); // Track if current user has personal goals
+  const [groupGoals, setGroupGoals] = useState([]); // Group goals for the current goal list
+  const [participantPersonalGoals, setParticipantPersonalGoals] = useState({}); // { userId: [goals] }
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
@@ -103,7 +106,8 @@ export default function GoalsScreen({ navigation }) {
       setSwitchingGoal(true);
       Promise.all([
         loadGoalsForCurrentList(),
-        checkOwnerPaymentStatus()
+        checkOwnerPaymentStatus(),
+        loadGroupGoals()
       ]).finally(() => {
         setSwitchingGoal(false);
       });
@@ -507,13 +511,92 @@ export default function GoalsScreen({ navigation }) {
           setAllParticipantsPaid(false);
           setOwnerPaidViaStripe(false);
         }
+        
+        // Check if current user has personal goals for this goal list
+        const { data: personalGoalsData } = await supabase
+          .from('goals')
+          .select('id')
+          .eq('goal_list_id', currentGoalList.id)
+          .eq('user_id', user.id)
+          .eq('goal_type', 'personal')
+          .limit(1);
+        
+        setHasPersonalGoals((personalGoalsData || []).length > 0);
       } else {
         setOwnerHasPaid(true); // Personal goals don't need payment
         setAllParticipantsPaid(true);
         setParticipants([]);
+        setHasPersonalGoals(false);
       }
     } catch (error) {
       console.error('Error checking payment status:', error);
+    }
+  };
+
+  // Load group goals and participant personal goals for the current goal list
+  const loadGroupGoals = async () => {
+    if (!currentGoalList) return;
+    
+    try {
+      // Load group goals from creator
+      const { data: goalListData } = await supabase
+        .from('goal_lists')
+        .select('user_id')
+        .eq('id', currentGoalList.id)
+        .single();
+
+      if (!goalListData) return;
+
+      const { data: groupGoalsData, error } = await supabase
+        .from('goals')
+        .select('title, created_at')
+        .eq('goal_list_id', currentGoalList.id)
+        .eq('goal_type', 'group')
+        .eq('user_id', goalListData.user_id) // Get from creator
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading group goals:', error);
+        setGroupGoals([]);
+      } else {
+        // Get unique group goal titles
+        const seenTitles = new Set();
+        const uniqueGroupGoals = [];
+        groupGoalsData?.forEach(goal => {
+          if (!seenTitles.has(goal.title)) {
+            seenTitles.add(goal.title);
+            uniqueGroupGoals.push(goal.title);
+          }
+        });
+        setGroupGoals(uniqueGroupGoals);
+      }
+
+      // Load personal goals for all participants
+      const { data: personalGoalsData, error: personalError } = await supabase
+        .from('goals')
+        .select('user_id, title')
+        .eq('goal_list_id', currentGoalList.id)
+        .eq('goal_type', 'personal')
+        .order('created_at', { ascending: true });
+
+      if (personalError) {
+        console.error('Error loading personal goals:', personalError);
+        setParticipantPersonalGoals({});
+      } else {
+        // Group personal goals by user_id
+        const goalsByUser = {};
+        personalGoalsData?.forEach(goal => {
+          if (!goalsByUser[goal.user_id]) {
+            goalsByUser[goal.user_id] = [];
+          }
+          goalsByUser[goal.user_id].push(goal.title);
+        });
+        setParticipantPersonalGoals(goalsByUser);
+      }
+    } catch (error) {
+      console.error('Error loading goals:', error);
+      setGroupGoals([]);
+      setParticipantPersonalGoals({});
     }
   };
 
@@ -1801,6 +1884,21 @@ export default function GoalsScreen({ navigation }) {
                   </Text>
                 </View>
               )}
+
+              {/* Group Goals - Below price/punishment */}
+              {groupGoals.length > 0 && (
+                <View style={styles.groupGoalsListContainer}>
+                  <Text style={styles.groupGoalsListTitle}>Group Goals</Text>
+                  <View style={styles.groupGoalsBulletList}>
+                    {groupGoals.map((goalTitle, index) => (
+                      <View key={index} style={styles.groupGoalBulletItem}>
+                        <Text style={styles.groupGoalBullet}>•</Text>
+                        <Text style={styles.groupGoalBulletText}>{goalTitle}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
               
               {/* For Punishment Goals: Match money overlay structure */}
               {currentGoalList.consequence_type === 'punishment' ? (
@@ -1836,62 +1934,45 @@ export default function GoalsScreen({ navigation }) {
                                 <Text style={styles.youStatusUsername}>
                                   {profile.username?.replace('@', '') || 'username'}
                                 </Text>
+                                {/* Personal Goals for this participant */}
+                                {participantPersonalGoals[participant.user_id] && participantPersonalGoals[participant.user_id].length > 0 && (
+                                  <View style={styles.participantPersonalGoalsList}>
+                                    {participantPersonalGoals[participant.user_id].map((goalTitle, idx) => (
+                                      <View key={idx} style={styles.participantPersonalGoalItem}>
+                                        <Text style={styles.participantPersonalGoalBullet}>•</Text>
+                                        <Text style={styles.participantPersonalGoalText}>{goalTitle}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                )}
                               </View>
                             </View>
                             <View style={styles.youStatusRight}>
                               {isCurrentUser ? (
                                 ownerHasPaid ? (
-                                  <TouchableOpacity 
-                                    onPress={async () => {
-                                      const { data: { user } } = await supabase.auth.getUser();
-                                      if (user) {
-                                        const { error } = await supabase
-                                          .from('group_goal_participants')
-                                          .upsert({
-                                            goal_list_id: currentGoalList.id,
-                                            user_id: user.id,
-                                            payment_status: 'pending'
-                                          }, {
-                                            onConflict: 'goal_list_id,user_id'
-                                          });
-                                        
-                                        if (!error) {
-                                          await checkOwnerPaymentStatus();
-                                        } else {
-                                          console.error('Error unaccepting punishment:', error);
-                                        }
-                                      }
-                                    }}
-                                  >
-                                    <Text style={styles.youStatusBadgeTextPaid}>
-                                      Accepted
-                                    </Text>
-                                  </TouchableOpacity>
+                                  <Text style={styles.youStatusBadgeTextPaid}>
+                                    Accepted
+                                  </Text>
                                 ) : (
                                   <TouchableOpacity 
                                     onPress={async () => {
-                                      const { data: { user } } = await supabase.auth.getUser();
-                                      if (user) {
-                                        const { error } = await supabase
-                                          .from('group_goal_participants')
-                                          .upsert({
-                                            goal_list_id: currentGoalList.id,
-                                            user_id: user.id,
-                                            payment_status: 'paid'
-                                          }, {
-                                            onConflict: 'goal_list_id,user_id'
-                                          });
-                                        
-                                        if (!error) {
-                                          await checkOwnerPaymentStatus();
-                                        } else {
-                                          console.error('Error accepting punishment:', error);
-                                        }
+                                      if (!hasPersonalGoals) {
+                                        navigation.navigate('AddGoals', {
+                                          goalListId: currentGoalList.id,
+                                          goalListName: currentGoalList.name,
+                                          consequenceType: currentGoalList.consequence_type,
+                                        });
+                                      } else {
+                                        navigation.navigate('AddGoals', {
+                                          goalListId: currentGoalList.id,
+                                          goalListName: currentGoalList.name,
+                                          consequenceType: currentGoalList.consequence_type,
+                                        });
                                       }
                                     }}
                                   >
                                     <Text style={styles.youStatusBadgeText}>
-                                      Accept
+                                      Continue
                                     </Text>
                                   </TouchableOpacity>
                                 )
@@ -2084,6 +2165,17 @@ export default function GoalsScreen({ navigation }) {
                                 <Text style={styles.youStatusUsername}>
                                   {profile.username?.replace('@', '') || 'username'}
                                 </Text>
+                                {/* Personal Goals for this participant */}
+                                {participantPersonalGoals[participant.user_id] && participantPersonalGoals[participant.user_id].length > 0 && (
+                                  <View style={styles.participantPersonalGoalsList}>
+                                    {participantPersonalGoals[participant.user_id].map((goalTitle, idx) => (
+                                      <View key={idx} style={styles.participantPersonalGoalItem}>
+                                        <Text style={styles.participantPersonalGoalBullet}>•</Text>
+                                        <Text style={styles.participantPersonalGoalText}>{goalTitle}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                )}
                               </View>
                             </View>
                             <View style={styles.youStatusRight}>
@@ -2094,17 +2186,25 @@ export default function GoalsScreen({ navigation }) {
                                   </Text>
                                 ) : (
                                   <TouchableOpacity 
-                                    style={styles.payNowButtonSmall}
+                                    style={styles.proceedButtonSmall}
                                     onPress={() => {
-                                      navigation.navigate('GroupGoalPayment', {
-                                        goalListId: currentGoalList.id,
-                                        amount: currentGoalList.amount,
-                                        goalListName: currentGoalList.name,
-                                      });
+                                      if (!hasPersonalGoals) {
+                                        navigation.navigate('AddGoals', {
+                                          goalListId: currentGoalList.id,
+                                          goalListName: currentGoalList.name,
+                                          consequenceType: currentGoalList.consequence_type,
+                                        });
+                                      } else {
+                                        navigation.navigate('GroupGoalPayment', {
+                                          goalListId: currentGoalList.id,
+                                          amount: currentGoalList.amount,
+                                          goalListName: currentGoalList.name,
+                                        });
+                                      }
                                     }}
                                   >
-                                    <Text style={styles.payNowButtonSmallText}>
-                                      Pay Now
+                                    <Text style={styles.proceedButtonSmallText}>
+                                      Continue
                                     </Text>
                                   </TouchableOpacity>
                                 )
@@ -2921,6 +3021,61 @@ const styles = StyleSheet.create({
     elevation: 10000,
     paddingHorizontal: 20,
   },
+  groupGoalsListContainer: {
+    marginBottom: 24,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  groupGoalsListTitle: {
+    fontSize: 12,
+    color: '#ffffff',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '600',
+  },
+  groupGoalsBulletList: {
+    gap: 4,
+  },
+  groupGoalBulletItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  groupGoalBullet: {
+    fontSize: 10,
+    color: '#ffffff',
+    marginTop: 2,
+  },
+  groupGoalBulletText: {
+    fontSize: 10,
+    color: '#ffffff',
+    flex: 1,
+    lineHeight: 14,
+    textTransform: 'uppercase',
+  },
+  participantPersonalGoalsList: {
+    marginTop: 6,
+    gap: 2,
+  },
+  participantPersonalGoalItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  participantPersonalGoalBullet: {
+    fontSize: 10,
+    color: '#ffffff',
+    marginTop: 2,
+  },
+  participantPersonalGoalText: {
+    fontSize: 10,
+    color: '#ffffff',
+    flex: 1,
+    lineHeight: 14,
+    textTransform: 'uppercase',
+  },
   totalAmountContainer: {
     alignItems: 'center',
     marginBottom: 28,
@@ -3487,19 +3642,19 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     letterSpacing: 0.5,
   },
-  payNowButtonSmall: {
-    backgroundColor: '#4CAF50',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+  proceedButtonSmall: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'transparent',
   },
-  payNowButtonSmallText: {
-    fontSize: 12,
+  proceedButtonSmallText: {
+    fontSize: 14,
     fontWeight: '700',
     color: '#ffffff',
-    letterSpacing: 0.5,
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
   },
 });
 
