@@ -2253,15 +2253,19 @@ export default function GoalsScreen({ navigation }) {
                     </ScrollView>
                   </View>
                   
-                  {/* Start Button - Show when all participants have paid and user is owner */}
-                  {allParticipantsPaid && hasOtherParticipants && currentGoalList.user_id === currentUser?.id && (
+                  {/* Start Button or Waiting Message - Show when all participants have paid */}
+                  {allParticipantsPaid && hasOtherParticipants && (
                     <View style={styles.startButtonContainer}>
-                      <TouchableOpacity 
-                        style={styles.startButton}
-                        onPress={handleStartGoalList}
-                      >
-                        <Text style={styles.startButtonText}>Begin</Text>
-                      </TouchableOpacity>
+                      {currentGoalList.user_id === currentUser?.id ? (
+                        <TouchableOpacity 
+                          style={styles.startButton}
+                          onPress={handleStartGoalList}
+                        >
+                          <Text style={styles.startButtonText}>Begin</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <Text style={styles.waitingForOwnerText}>Waiting for owner to start</Text>
+                      )}
                     </View>
                   )}
                   
@@ -2497,15 +2501,19 @@ export default function GoalsScreen({ navigation }) {
                     </ScrollView>
                   </View>
                   
-                  {/* Start Button - Show when all participants have paid and user is owner */}
-                  {allParticipantsPaid && hasOtherParticipants && currentGoalList.user_id === currentUser?.id && (
+                  {/* Start Button or Waiting Message - Show when all participants have paid */}
+                  {allParticipantsPaid && hasOtherParticipants && (
                     <View style={styles.startButtonContainer}>
-                      <TouchableOpacity 
-                        style={styles.startButton}
-                        onPress={handleStartGoalList}
-                      >
-                        <Text style={styles.startButtonText}>Begin</Text>
-                      </TouchableOpacity>
+                      {currentGoalList.user_id === currentUser?.id ? (
+                        <TouchableOpacity 
+                          style={styles.startButton}
+                          onPress={handleStartGoalList}
+                        >
+                          <Text style={styles.startButtonText}>Begin</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <Text style={styles.waitingForOwnerText}>Waiting for owner to start</Text>
+                      )}
                     </View>
                   )}
                   
@@ -3503,6 +3511,14 @@ const styles = StyleSheet.create({
     color: '#FFD700',
     textTransform: 'uppercase',
     letterSpacing: 1,
+  },
+  waitingForOwnerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#888888',
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   otherUsersSection: {
     marginBottom: 24,
