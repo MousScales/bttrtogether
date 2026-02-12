@@ -244,6 +244,42 @@ export default function GoalsScreen({ navigation }) {
   }, [friendsSearchQuery]);
 
   // Send friend request (instead of directly adding)
+  // Handle starting the goal list
+  const handleStartGoalList = async () => {
+    if (!currentGoalList || !allParticipantsPaid) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      
+      // Check if user is the owner
+      if (currentGoalList.user_id !== user.id) {
+        Alert.alert('Error', 'Only the goal list creator can start the challenge');
+        return;
+      }
+      
+      // Update goal list to mark it as started using all_paid field
+      const { error: updateError } = await supabase
+        .from('goal_lists')
+        .update({ all_paid: true })
+        .eq('id', currentGoalList.id)
+        .eq('user_id', user.id);
+      
+      if (updateError) {
+        throw updateError;
+      }
+      
+      Alert.alert('Success', 'Goal list started! All participants can now track their progress.');
+      
+      // Reload goals to show them
+      await loadGoalsForCurrentList();
+      await checkOwnerPaymentStatus();
+    } catch (error) {
+      console.error('Error starting goal list:', error);
+      Alert.alert('Error', 'Failed to start goal list');
+    }
+  };
+
   // Helper function to create group goals for a participant
   const createGroupGoalsForParticipant = async (userId, goalListId) => {
     try {
@@ -763,69 +799,141 @@ export default function GoalsScreen({ navigation }) {
           return;
         }
         
-        const { data, error } = await supabase
-          .from('goals')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('goal_list_id', currentGoalList.id)
-          .order('created_at', { ascending: true });
-
-        if (error) throw error;
+        // Check if goal list is started (all_paid = true for group goals)
+        const isStarted = currentGoalList.type === 'group' && currentGoalList.all_paid === true;
+        
+        let data;
+        let allParticipantsGoals = [];
+        
+        if (isStarted && currentGoalList.type === 'group') {
+          // Load all participants' goals (group and personal) for started group goal lists
+          // First, get all participants
+          const { data: participantsData } = await supabase
+            .from('group_goal_participants')
+            .select('user_id')
+            .eq('goal_list_id', currentGoalList.id);
+          
+          const participantIds = [
+            currentGoalList.user_id, // Include creator
+            ...(participantsData || []).map(p => p.user_id)
+          ];
+          
+          // Remove duplicates
+          const uniqueParticipantIds = [...new Set(participantIds)];
+          
+          // Load all goals from all participants
+          const { data: allGoalsData, error: allGoalsError } = await supabase
+            .from('goals')
+            .select('*')
+            .eq('goal_list_id', currentGoalList.id)
+            .in('user_id', uniqueParticipantIds)
+            .order('created_at', { ascending: true });
+          
+          if (allGoalsError) throw allGoalsError;
+          
+          allParticipantsGoals = allGoalsData || [];
+          
+          // For current user, load their goals as before
+          const { data: userGoalsData, error: userGoalsError } = await supabase
+            .from('goals')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('goal_list_id', currentGoalList.id)
+            .order('created_at', { ascending: true });
+          
+          if (userGoalsError) throw userGoalsError;
+          data = userGoalsData || [];
+        } else {
+          // For non-started or personal goals, only load current user's goals
+          const { data: userGoalsData, error: userGoalsError } = await supabase
+            .from('goals')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('goal_list_id', currentGoalList.id)
+            .order('created_at', { ascending: true });
+          
+          if (userGoalsError) throw userGoalsError;
+          data = userGoalsData || [];
+        }
 
         // Get today's date string
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayStr = today.toISOString().split('T')[0];
 
-        // Get goal IDs
-        const goalIds = data.map(g => g.id);
+        // Get goal IDs - use all participants' goals if started
+        const goalIdsToCheck = isStarted && currentGoalList.type === 'group' 
+          ? allParticipantsGoals.map(g => g.id)
+          : data.map(g => g.id);
         
-          // Load completion records for today
+          // Load completion records for today - for all goals if started
           let todayCompletions = new Set();
-          if (goalIds.length > 0) {
+          if (goalIdsToCheck.length > 0) {
             const { data: completionsData } = await supabase
               .from('goal_completions')
-              .select('goal_id')
-              .in('goal_id', goalIds)
-              .eq('user_id', user.id)
+              .select('goal_id, user_id')
+              .in('goal_id', goalIdsToCheck)
               .eq('completed_at', todayStr);
             
             if (completionsData) {
-              todayCompletions = new Set(completionsData.map(c => c.goal_id));
+              // For started group goals, track completions by goal_id and user_id
+              // For personal goals, only track current user's completions
+              if (isStarted && currentGoalList.type === 'group') {
+                completionsData.forEach(c => {
+                  todayCompletions.add(`${c.goal_id}_${c.user_id}`);
+                });
+              } else {
+                completionsData
+                  .filter(c => c.user_id === user.id)
+                  .forEach(c => {
+                    todayCompletions.add(c.goal_id);
+                  });
+              }
             }
           }
 
           // Load past completion records to populate history
           let pastCompletions = {};
-          if (goalIds.length > 0) {
+          if (goalIdsToCheck.length > 0) {
             const { data: pastCompletionsData } = await supabase
               .from('goal_completions')
-              .select('goal_id, completed_at')
-              .in('goal_id', goalIds)
-              .eq('user_id', user.id)
+              .select('goal_id, completed_at, user_id, proof_url')
+              .in('goal_id', goalIdsToCheck)
               .lt('completed_at', todayStr);
           
           if (pastCompletionsData) {
             pastCompletionsData.forEach(c => {
               const dateStr = c.completed_at.includes('T') ? c.completed_at.split('T')[0] : c.completed_at;
-              if (!pastCompletions[c.goal_id]) {
-                pastCompletions[c.goal_id] = new Set();
+              const key = isStarted && currentGoalList.type === 'group' 
+                ? `${c.goal_id}_${c.user_id}`
+                : c.goal_id;
+              if (!pastCompletions[key]) {
+                pastCompletions[key] = new Set();
               }
-              pastCompletions[c.goal_id].add(dateStr);
+              pastCompletions[key].add(dateStr);
             });
           }
         }
 
+        // If started group goal, transform all participants' goals
+        let goalsToTransform = isStarted && currentGoalList.type === 'group' 
+          ? allParticipantsGoals 
+          : data;
+        
         // Transform data to match existing format
-        const transformedGoals = await Promise.all(data.map(async (goal) => {
+        const transformedGoals = await Promise.all(goalsToTransform.map(async (goal) => {
+          const isOwnGoal = goal.user_id === user.id;
           const history = generateCompletionHistory(goal.created_at);
           const currentDayIndex = getCurrentDayIndex(goal.created_at);
           
           // Check if goal is completed today based on completion record
-          const isCompletedToday = todayCompletions.has(goal.id);
+          const completionKey = isStarted && currentGoalList.type === 'group' 
+            ? `${goal.id}_${goal.user_id}`
+            : goal.id;
+          const isCompletedToday = todayCompletions.has(completionKey);
           
-          // If goal.completed doesn't match today's completion status, update it
-          if (goal.completed !== isCompletedToday) {
+          // Only update if it's the current user's goal
+          if (isOwnGoal && goal.completed !== isCompletedToday) {
             await supabase
               .from('goals')
               .update({ completed: isCompletedToday })
@@ -834,11 +942,14 @@ export default function GoalsScreen({ navigation }) {
           }
           
           // Populate past days in history from completion records
-          if (pastCompletions[goal.id]) {
+          const pastCompletionsKey = isStarted && currentGoalList.type === 'group'
+            ? `${goal.id}_${goal.user_id}`
+            : goal.id;
+          if (pastCompletions[pastCompletionsKey]) {
             const createdDate = new Date(goal.created_at);
             createdDate.setHours(0, 0, 0, 0);
             
-            pastCompletions[goal.id].forEach(dateStr => {
+            pastCompletions[pastCompletionsKey].forEach(dateStr => {
               const completionDate = new Date(dateStr);
               completionDate.setHours(0, 0, 0, 0);
               
@@ -852,6 +963,33 @@ export default function GoalsScreen({ navigation }) {
           // Set today's completion status
           history[currentDayIndex] = isCompletedToday;
           
+          // Load profile for other users' goals
+          let userProfile = null;
+          if (!isOwnGoal) {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('id, name, username, avatar_url')
+              .eq('id', goal.user_id)
+              .single();
+            userProfile = profile;
+          }
+          
+          // Check if there's a post (completion with proof) for today
+          let hasProof = false;
+          let caption = null;
+          if (isCompletedToday) {
+            const { data: todayCompletion } = await supabase
+              .from('goal_completions')
+              .select('proof_url')
+              .eq('goal_id', goal.id)
+              .eq('user_id', goal.user_id)
+              .eq('completed_at', todayStr)
+              .single();
+            
+            hasProof = !!todayCompletion?.proof_url;
+            // TODO: Load caption from posts table if you have one
+          }
+          
           return {
             id: goal.id,
             title: goal.title,
@@ -862,13 +1000,31 @@ export default function GoalsScreen({ navigation }) {
             totalViewers: 0,
             completionHistory: history,
             color: getRandomColor(),
-            goal_list_type: currentGoalList.type, // Store goal list type
-            created_at: goal.created_at, // Store creation date
-            currentDayIndex: currentDayIndex, // Store current day index for this goal
+            goal_list_type: currentGoalList.type,
+            goal_type: goal.goal_type || 'personal', // 'group' or 'personal'
+            created_at: goal.created_at,
+            currentDayIndex: currentDayIndex,
+            isOwnGoal: isOwnGoal,
+            user_id: goal.user_id,
+            user_name: userProfile?.name || 'User',
+            user_avatar: userProfile?.avatar_url || '👤',
+            user_username: userProfile?.username || '@user',
+            hasProof: hasProof,
+            caption: caption,
           };
         }));
 
-        setGoals(transformedGoals);
+        // Sort goals: group goals first, then personal goals, then by creation date
+        const sortedGoals = transformedGoals.sort((a, b) => {
+          // Group goals first
+          if (a.goal_type === 'group' && b.goal_type !== 'group') return -1;
+          if (a.goal_type !== 'group' && b.goal_type === 'group') return 1;
+          
+          // Then by creation date
+          return new Date(a.created_at) - new Date(b.created_at);
+        });
+        
+        setGoals(sortedGoals);
       }
     } catch (error) {
       console.error('Error loading goals:', error);
@@ -1288,15 +1444,67 @@ export default function GoalsScreen({ navigation }) {
     }
   };
 
-  // Get friends for current goal list (hard-coded for test group goal)
-  const friends = currentGoalList?.id === 'hardcoded-group-goal' 
-    ? [
-        { id: '1', emoji: '😎', name: 'Alex', progress: 0.8 },
-        { id: '2', emoji: '🤠', name: 'Sam', progress: 0.6 },
-        { id: '3', emoji: '🥳', name: 'Jordan', progress: 0.9 },
-        { id: '4', emoji: '🤓', name: 'Taylor', progress: 0.7 },
-      ]
-    : [];
+  // State for friends/participants
+  const [friends, setFriends] = useState([]);
+  
+  // Load friends/participants for group goals
+  useEffect(() => {
+    const loadFriends = async () => {
+      if (!currentGoalList || currentGoalList.id === 'hardcoded-group-goal') {
+        // Hard-coded friends for test goal
+        setFriends([
+          { id: '1', emoji: '😎', name: 'Alex', progress: 0.8 },
+          { id: '2', emoji: '🤠', name: 'Sam', progress: 0.6 },
+          { id: '3', emoji: '🥳', name: 'Jordan', progress: 0.9 },
+          { id: '4', emoji: '🤓', name: 'Taylor', progress: 0.7 },
+        ]);
+        return;
+      }
+      
+      if (currentGoalList.type === 'group') {
+        try {
+          // Load all participants
+          const { data: participantsData } = await supabase
+            .from('group_goal_participants')
+            .select('user_id')
+            .eq('goal_list_id', currentGoalList.id);
+          
+          const participantIds = [
+            currentGoalList.user_id, // Include creator
+            ...(participantsData || []).map(p => p.user_id)
+          ];
+          
+          // Remove duplicates
+          const uniqueParticipantIds = [...new Set(participantIds)];
+          
+          // Load profiles for all participants
+          const { data: profiles } = await supabase
+            .from('profiles')
+            .select('id, name, username, avatar_url')
+            .in('id', uniqueParticipantIds);
+          
+          if (profiles) {
+            const friendsList = profiles.map(profile => ({
+              id: profile.id,
+              emoji: profile.avatar_url || '👤',
+              name: profile.name || 'User',
+              progress: 0.5, // TODO: Calculate actual progress
+            }));
+            setFriends(friendsList);
+          } else {
+            setFriends([]);
+          }
+        } catch (error) {
+          console.error('Error loading friends:', error);
+          setFriends([]);
+        }
+      } else {
+        setFriends([]);
+      }
+    };
+    
+    loadFriends();
+  }, [currentGoalList]);
 
   // Create animated values for each friend - recreate when friends change
   const floatAnims = useRef([]);
@@ -1893,7 +2101,8 @@ export default function GoalsScreen({ navigation }) {
         const hasOtherParticipants = otherParticipants.length > 0;
         const showOverlay = !allParticipantsPaid || !hasOtherParticipants;
         
-        if (!showOverlay) return null;
+        // Always show overlay if it's a group goal (either to pay/accept or to start)
+        if (currentGoalList.type !== 'group') return null;
         
         // Get current user's participant data
         const currentUserParticipant = participantsForThisList.find(p => p.user_id === currentUser?.id);
@@ -2001,7 +2210,7 @@ export default function GoalsScreen({ navigation }) {
                             </View>
                             <View style={styles.youStatusRight}>
                               {isCurrentUser ? (
-                                ownerHasPaid ? (
+                                hasAccepted ? (
                                   <Text style={styles.youStatusBadgeTextPaid}>
                                     Accepted
                                   </Text>
@@ -2043,6 +2252,18 @@ export default function GoalsScreen({ navigation }) {
                       )}
                     </ScrollView>
                   </View>
+                  
+                  {/* Start Button - Show when all participants have paid and user is owner */}
+                  {allParticipantsPaid && hasOtherParticipants && currentGoalList.user_id === currentUser?.id && (
+                    <View style={styles.startButtonContainer}>
+                      <TouchableOpacity 
+                        style={styles.startButton}
+                        onPress={handleStartGoalList}
+                      >
+                        <Text style={styles.startButtonText}>Begin</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                   
                   {/* Add User Section */}
                   {!hasOtherParticipants && (
@@ -2095,8 +2316,8 @@ export default function GoalsScreen({ navigation }) {
                                   <View style={styles.friendItemLeft}>
                                     <View style={styles.friendItemAvatar}>
                                       {friend.avatar_url ? (
-                                        <Image
-                                          source={{ uri: friend.avatar_url }}
+                                        <Image 
+                                          source={{ uri: friend.avatar_url }} 
                                           style={styles.friendItemAvatarImage}
                                           resizeMode="cover"
                                         />
@@ -2232,7 +2453,7 @@ export default function GoalsScreen({ navigation }) {
                             </View>
                             <View style={styles.youStatusRight}>
                               {isCurrentUser ? (
-                                ownerPaidViaStripe ? (
+                                hasPaid ? (
                                   <Text style={styles.youStatusBadgeTextPaid}>
                                     Paid
                                   </Text>
@@ -2275,6 +2496,18 @@ export default function GoalsScreen({ navigation }) {
                       )}
                     </ScrollView>
                   </View>
+                  
+                  {/* Start Button - Show when all participants have paid and user is owner */}
+                  {allParticipantsPaid && hasOtherParticipants && currentGoalList.user_id === currentUser?.id && (
+                    <View style={styles.startButtonContainer}>
+                      <TouchableOpacity 
+                        style={styles.startButton}
+                        onPress={handleStartGoalList}
+                      >
+                        <Text style={styles.startButtonText}>Begin</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                   
                   {/* Add User Section */}
                   {!hasOtherParticipants && (
@@ -3251,6 +3484,25 @@ const styles = StyleSheet.create({
   },
   youStatusBadgeTextPaid: {
     color: '#4CAF50',
+  },
+  startButtonContainer: {
+    marginTop: 24,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  startButton: {
+    backgroundColor: 'transparent',
+    paddingVertical: 16,
+    paddingHorizontal: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFD700',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
   otherUsersSection: {
     marginBottom: 24,

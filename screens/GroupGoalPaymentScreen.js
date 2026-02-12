@@ -135,7 +135,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     Alert.alert('Success', 'Payment successful! You\'ve joined the challenge.', [
       {
         text: 'OK',
-        onPress: () => navigation.navigate('GoalsHome'),
+        onPress: () => navigation.goBack(),
       },
     ]);
   };
