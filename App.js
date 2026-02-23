@@ -22,6 +22,7 @@ import AddFriendsStepScreen from './screens/AddFriendsStepScreen';
 import GroupGoalPaymentScreen from './screens/GroupGoalPaymentScreen';
 import PayoutScreen from './screens/PayoutScreen';
 import AddGoalsScreen from './screens/AddGoalsScreen';
+import MoneyScreen from './screens/MoneyScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -70,6 +71,13 @@ function GoalsStack() {
       <Stack.Screen 
         name="AddGoals" 
         component={AddGoalsScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen 
+        name="Payout" 
+        component={PayoutScreen}
         options={{
           presentation: 'modal',
         }}

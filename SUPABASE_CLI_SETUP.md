@@ -37,18 +37,25 @@ This will open your browser to authenticate.
 supabase link --project-ref your-project-ref-id
 ```
 
-## Step 4: Set the Stripe Secret Key
+## Step 4: Set Secrets
 
 ```bash
-# Set the secret key for the Edge Function
+# Stripe secret key (already set if you did this before)
 supabase secrets set STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key_here
+
+# Supabase service role key — needed by process-payout to write DB records
+# Find it in: Supabase Dashboard → Settings → API → service_role key
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 ```
 
-## Step 5: Deploy the Function
+## Step 5: Deploy All Functions
 
 ```bash
-# Deploy the create-payment-intent function
-supabase functions deploy create-payment-intent
+# Deploy payment intent function
+supabase functions deploy super-handler
+
+# Deploy the NEW payout function (Stripe Connect + winner transfers)
+supabase functions deploy process-payout
 ```
 
 ## Step 6: Test It (Optional)

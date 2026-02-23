@@ -52,6 +52,11 @@ serve(async (req) => {
       )
     }
 
+    // --- Fee split (10% platform fee, 90% prize pool) ---
+    const PLATFORM_FEE_PERCENT = 0.10;
+    const platformFeeAmount = Math.round(amount * PLATFORM_FEE_PERCENT * 100) / 100; // dollars
+    const prizePoolAmount    = Math.round((amount - platformFeeAmount) * 100) / 100;  // dollars
+
     // Create PaymentIntent with specific payment configuration
     // Using payment configuration ID to control which payment methods are available
     // This configuration includes: Cards, Apple Pay, Cash App Pay (excludes Klarna, Affirm, Amazon Pay)
@@ -65,6 +70,8 @@ serve(async (req) => {
       metadata: {
         goal_list_id,
         user_id,
+        prize_pool_contribution:   String(prizePoolAmount),
+        platform_fee_contribution: String(platformFeeAmount),
       },
     })
 
@@ -72,6 +79,8 @@ serve(async (req) => {
       JSON.stringify({
         clientSecret: paymentIntent.client_secret,
         paymentIntentId: paymentIntent.id,
+        prizePoolContribution:   prizePoolAmount,
+        platformFeeContribution: platformFeeAmount,
       }),
       { 
         headers: { 

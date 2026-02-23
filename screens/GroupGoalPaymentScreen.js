@@ -82,18 +82,28 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     }
   };
 
+  // Platform fee is 10%; winner receives the remaining 90%.
+  const PLATFORM_FEE_PERCENT = 0.10;
+
   const processPaymentSuccess = async () => {
     const { data: { user } } = await supabase.auth.getUser();
-    
-    // Save payment to database
+    const paidAmount = parseFloat(amount);
+
+    // Calculate the fee split for this participant's contribution
+    const platformFeeContribution = Math.round(paidAmount * PLATFORM_FEE_PERCENT * 100) / 100;
+    const prizePoolContribution   = Math.round((paidAmount - platformFeeContribution) * 100) / 100;
+
+    // Save payment record with fee breakdown
     await supabase
       .from('payments')
       .insert({
-        goal_list_id: goalListId,
-        user_id: user.id,
-        amount: parseFloat(amount),
-        stripe_payment_intent_id: paymentIntentId,
-        status: 'succeeded',
+        goal_list_id:              goalListId,
+        user_id:                   user.id,
+        amount:                    paidAmount,
+        stripe_payment_intent_id:  paymentIntentId,
+        status:                    'succeeded',
+        prize_pool_contribution:   prizePoolContribution,
+        platform_fee_contribution: platformFeeContribution,
       });
 
     // Update participant payment status
@@ -103,21 +113,28 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
       .eq('goal_list_id', goalListId)
       .eq('user_id', user.id);
 
-    // Update total pot
+    // Update total pot and the two running sub-totals on the goal list
     const { data: goalListCheck } = await supabase
       .from('goal_lists')
-      .select('user_id, total_pot')
+      .select('user_id, total_pot, prize_pool_amount, platform_fee_amount')
       .eq('id', goalListId)
       .single();
 
     if (goalListCheck) {
-      const newTotal = (goalListCheck.total_pot || 0) + parseFloat(amount);
+      const newTotal          = (goalListCheck.total_pot          || 0) + paidAmount;
+      const newPrizePool      = (goalListCheck.prize_pool_amount   || 0) + prizePoolContribution;
+      const newPlatformFee    = (goalListCheck.platform_fee_amount || 0) + platformFeeContribution;
+
       await supabase
         .from('goal_lists')
-        .update({ total_pot: newTotal })
+        .update({
+          total_pot:           newTotal,
+          prize_pool_amount:   newPrizePool,
+          platform_fee_amount: newPlatformFee,
+        })
         .eq('id', goalListId);
 
-      // Check if all participants have paid
+      // Check if all participants have paid → set all_paid flag
       const { data: participants } = await supabase
         .from('group_goal_participants')
         .select('payment_status')
