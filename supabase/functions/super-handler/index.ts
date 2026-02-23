@@ -58,15 +58,12 @@ serve(async (req) => {
     const prizePoolAmount    = Math.round((amount - platformFeeAmount) * 100) / 100;  // dollars
 
     // Create PaymentIntent with specific payment configuration
-    // Using payment configuration ID to control which payment methods are available
-    // This configuration includes: Cards, Apple Pay, Cash App Pay (excludes Klarna, Affirm, Amazon Pay)
+    // When using payment_method_configuration you must enable automatic_payment_methods
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents
       currency: "usd",
-      // Use payment configuration ID to control available payment methods
+      automatic_payment_methods: { enabled: true },
       payment_method_configuration: 'pmc_1SzSj4RwOzsJN1cm5UV9euv1',
-      // Explicitly include payment method types to ensure Apple Pay is supported
-      payment_method_types: ['card', 'apple_pay', 'cashapp'],
       metadata: {
         goal_list_id,
         user_id,

@@ -631,7 +631,7 @@ export default function ProfileScreen({ navigation }) {
   const [goalListParticipants, setGoalListParticipants] = useState({}); // Track participants for each goal list
   const [goalListCompletionData, setGoalListCompletionData] = useState({}); // Track completion data for each goal list
 
-  // Check if group goal lists have started (all participants paid/accepted)
+  // Determine which goal lists have started, using the authoritative started_at DB column
   useEffect(() => {
     const checkGoalListStatuses = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -639,83 +639,67 @@ export default function ProfileScreen({ navigation }) {
 
       const statuses = {};
       const participantsData = {};
-      
-      // Check each group goal list
+
       for (const goalList of goalLists) {
         if (goalList.type === 'group') {
-          // Load all participants
-          const { data: participantsDataRaw, error: participantsError } = await supabase
+          // Primary check: started_at column (set by handleStartGoalList)
+          if (goalList.started_at) {
+            statuses[goalList.id] = true;
+          } else {
+            // Fallback: check if all participants have paid (handles legacy rows)
+            const { data: participantsDataRaw } = await supabase
+              .from('group_goal_participants')
+              .select('user_id, payment_status')
+              .eq('goal_list_id', goalList.id);
+
+            const list = participantsDataRaw || [];
+            statuses[goalList.id] = list.length > 0 && list.every(p => p.payment_status === 'paid');
+          }
+
+          // Load participants with profiles for display
+          const { data: participantsDataRaw } = await supabase
             .from('group_goal_participants')
             .select('*')
             .eq('goal_list_id', goalList.id);
-          
-          if (participantsError) {
-            console.error('Error loading participants:', participantsError);
-            participantsData[goalList.id] = [];
-            statuses[goalList.id] = false;
-          } else {
-            // Always include the creator (owner) even if not in participants table
-            const creatorId = goalList.user_id;
-            const creatorInParticipants = participantsDataRaw?.find(p => p.user_id === creatorId);
-            
-            let allParticipantsList = [...(participantsDataRaw || [])];
-            
-            // If creator is not in participants, add them
-            if (!creatorInParticipants) {
-              // Load creator's profile
-              const { data: creatorProfile } = await supabase
+
+          const allParticipantsList = [...(participantsDataRaw || [])];
+
+          const creatorId = goalList.user_id;
+          if (!allParticipantsList.find(p => p.user_id === creatorId)) {
+            const { data: creatorProfile } = await supabase
+              .from('profiles')
+              .select('id, name, username, avatar_url')
+              .eq('id', creatorId)
+              .single();
+            allParticipantsList.unshift({
+              id: `creator-${creatorId}`,
+              user_id: creatorId,
+              goal_list_id: goalList.id,
+              payment_status: 'pending',
+              profile: creatorProfile || null,
+            });
+          }
+
+          const participantsWithProfiles = await Promise.all(
+            allParticipantsList.map(async (participant) => {
+              if (participant.profile) return participant;
+              const { data: profile } = await supabase
                 .from('profiles')
                 .select('id, name, username, avatar_url')
-                .eq('id', creatorId)
+                .eq('id', participant.user_id)
                 .single();
-              
-              allParticipantsList.unshift({
-                id: `creator-${creatorId}`,
-                user_id: creatorId,
-                goal_list_id: goalList.id,
-                payment_status: 'pending',
-                profile: creatorProfile || null,
-              });
-            }
-            
-            if (allParticipantsList.length > 0) {
-              // Load profiles for each participant (if not already loaded)
-              const participantsWithProfiles = await Promise.all(
-                allParticipantsList.map(async (participant) => {
-                  // If profile already exists (for creator we just added), use it
-                  if (participant.profile) {
-                    return participant;
-                  }
-                  
-                  const { data: profile } = await supabase
-                    .from('profiles')
-                    .select('id, name, username, avatar_url')
-                    .eq('id', participant.user_id)
-                    .single();
-                  
-                  return {
-                    ...participant,
-                    profile: profile || null,
-                  };
-                })
-              );
-              
-              participantsData[goalList.id] = participantsWithProfiles;
-              const allStarted = participantsWithProfiles.every(p => p.payment_status === 'paid');
-              statuses[goalList.id] = allStarted;
-            } else {
-              // No participants yet, so not started
-              participantsData[goalList.id] = [];
-              statuses[goalList.id] = false;
-            }
-          }
+              return { ...participant, profile: profile || null };
+            })
+          );
+
+          participantsData[goalList.id] = participantsWithProfiles;
         } else {
           // Personal goals are always "started"
           statuses[goalList.id] = true;
           participantsData[goalList.id] = [];
         }
       }
-      
+
       setGoalListStatuses(statuses);
       setGoalListParticipants(participantsData);
     };

@@ -74,8 +74,6 @@ export default function GoalsScreen({ navigation }) {
   const [participantPersonalGoals, setParticipantPersonalGoals] = useState({}); // { userId: [goals] }
   const [goalListStarted, setGoalListStarted] = useState(false); // Track if goal list has been started
   const [declaredWinnerId, setDeclaredWinnerId] = useState(null); // winner_id from goal_lists
-  const [declaringWinner, setDeclaringWinner] = useState(false); // loading for declare winner action
-  const [showWinnerPicker, setShowWinnerPicker] = useState(false); // show participant picker modal
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
@@ -118,10 +116,9 @@ export default function GoalsScreen({ navigation }) {
   // Reload goals when current goal list changes
   useEffect(() => {
     if (currentGoalList) {
-      // Reset started state when goal list changes
-      setGoalListStarted(false);
-      
-      // Run both async functions in parallel for faster loading
+      // Restore started state from the DB column (persists across reloads)
+      setGoalListStarted(!!currentGoalList.started_at);
+
       setSwitchingGoal(true);
       Promise.all([
         loadGoalsForCurrentList(),
@@ -131,7 +128,7 @@ export default function GoalsScreen({ navigation }) {
         setSwitchingGoal(false);
       });
     }
-  }, [currentGoalList]);
+  }, [currentGoalList?.id]);
 
   // Load available friends when participants change
   useEffect(() => {
@@ -280,88 +277,39 @@ export default function GoalsScreen({ navigation }) {
   // Handle starting the goal list
   const handleStartGoalList = async () => {
     if (!currentGoalList || !allParticipantsPaid) return;
-    
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      
-      // Check if user is the owner
+
       if (currentGoalList.user_id !== user.id) {
         Alert.alert('Error', 'Only the goal list creator can start the challenge');
         return;
       }
-      
-      // Update goal list to mark it as started
-      // Try to update all_paid, but if it doesn't exist, we'll use a different approach
-      // For now, we'll just reload the data - the started state can be determined by checking if all participants paid
-      // You can add a 'started_at' timestamp column later if needed
-      
-      // Mark goal list as started
-      setGoalListStarted(true);
-      
-      // Reload the goal list to get updated data
-      const { data: updatedGoalList } = await supabase
+
+      const now = new Date().toISOString();
+
+      // Persist started_at so the challenge stays started across reloads
+      const { error: updateError } = await supabase
         .from('goal_lists')
-        .select('*')
+        .update({ started_at: now, all_paid: true })
         .eq('id', currentGoalList.id)
-        .single();
-      
-      if (updatedGoalList) {
-        setCurrentGoalList(updatedGoalList);
-      }
-      
-      Alert.alert('Success', 'Goal list started! All participants can now track their progress.');
-      
-      // Reload goals to show them
+        .eq('user_id', user.id);
+
+      if (updateError) throw updateError;
+
+      // Reflect the change immediately in local state
+      setGoalListStarted(true);
+      setCurrentGoalList(prev => ({ ...prev, started_at: now, all_paid: true }));
+
+      Alert.alert('Challenge Started! 🚀', 'All participants can now track their progress.');
+
       await loadGoalsForCurrentList();
       await checkOwnerPaymentStatus();
     } catch (error) {
       console.error('Error starting goal list:', error);
-      Alert.alert('Error', 'Failed to start goal list');
+      Alert.alert('Error', 'Failed to start challenge. Please try again.');
     }
-  };
-
-  // ── Declare a winner (called by the goal list owner) ──────────────────────
-  const handleDeclareWinner = (winnerId) => {
-    if (!currentGoalList || !currentUser) return;
-    if (currentGoalList.user_id !== currentUser.id) {
-      Alert.alert('Error', 'Only the challenge creator can declare a winner');
-      return;
-    }
-
-    const winnerProfile = participants.find(p => p.user_id === winnerId)?.profile;
-    const winnerName    = winnerProfile?.name || 'this participant';
-
-    Alert.alert(
-      'Declare Winner',
-      `Declare ${winnerName} as the winner? This cannot be undone.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Confirm',
-          onPress: async () => {
-            setDeclaringWinner(true);
-            try {
-              const { error } = await supabase
-                .from('goal_lists')
-                .update({ winner_id: winnerId })
-                .eq('id', currentGoalList.id)
-                .eq('user_id', currentUser.id); // ensures only owner can do this
-
-              if (error) throw error;
-              setDeclaredWinnerId(winnerId);
-              setShowWinnerPicker(false);
-              Alert.alert('Winner Declared!', `${winnerName} has been declared the winner and can now claim their prize.`);
-            } catch (err) {
-              console.error('Error declaring winner:', err);
-              Alert.alert('Error', err.message || 'Failed to declare winner');
-            } finally {
-              setDeclaringWinner(false);
-            }
-          },
-        },
-      ]
-    );
   };
 
   // Helper function to create group goals for a participant
@@ -543,13 +491,16 @@ export default function GoalsScreen({ navigation }) {
         // Verify user has access to this goal list (either owner or participant)
         const { data: goalListCheck } = await supabase
           .from('goal_lists')
-          .select('user_id, winner_id')
+          .select('user_id, winner_id, started_at')
           .eq('id', currentGoalList.id)
           .single();
 
-        // Sync declared winner into local state
+        // Sync declared winner and started state from DB
         if (goalListCheck?.winner_id) {
           setDeclaredWinnerId(goalListCheck.winner_id);
+        }
+        if (goalListCheck?.started_at) {
+          setGoalListStarted(true);
         }
         
         if (!goalListCheck) {
@@ -2696,81 +2647,33 @@ export default function GoalsScreen({ navigation }) {
                   )}
 
                   {/* ── WINNER ZONE (money goals only) ─────────────────────── */}
-                  {currentGoalList.consequence_type === 'money' && allParticipantsPaid && (
+                  {currentGoalList.consequence_type === 'money' && allParticipantsPaid && declaredWinnerId && (
                     <View style={styles.winnerZone}>
-                      {/* If no winner yet and user is owner → show Declare button */}
-                      {!declaredWinnerId && currentGoalList.user_id === currentUser?.id && (
-                        <>
-                          {showWinnerPicker ? (
-                            <View style={styles.winnerPickerContainer}>
-                              <Text style={styles.winnerPickerTitle}>Select the Winner</Text>
-                              {participants.map((p) => {
-                                const profile = p.profile || {};
-                                return (
-                                  <TouchableOpacity
-                                    key={p.user_id}
-                                    style={styles.winnerPickerRow}
-                                    onPress={() => handleDeclareWinner(p.user_id)}
-                                    disabled={declaringWinner}
-                                  >
-                                    <Text style={styles.winnerPickerName}>
-                                      {profile.name || 'User'}
-                                      {p.user_id === currentUser?.id && ' (You)'}
-                                    </Text>
-                                    {declaringWinner
-                                      ? <ActivityIndicator size="small" color="#FFD700" />
-                                      : <Ionicons name="trophy-outline" size={18} color="#FFD700" />
-                                    }
-                                  </TouchableOpacity>
-                                );
-                              })}
-                              <TouchableOpacity
-                                style={styles.winnerPickerCancel}
-                                onPress={() => setShowWinnerPicker(false)}
-                              >
-                                <Text style={styles.winnerPickerCancelText}>Cancel</Text>
-                              </TouchableOpacity>
-                            </View>
-                          ) : (
-                            <TouchableOpacity
-                              style={styles.declareWinnerButton}
-                              onPress={() => setShowWinnerPicker(true)}
-                            >
-                              <Ionicons name="trophy-outline" size={18} color="#FFD700" />
-                              <Text style={styles.declareWinnerButtonText}>Declare Winner</Text>
-                            </TouchableOpacity>
-                          )}
-                        </>
-                      )}
-
-                      {/* Winner announcement + Claim button */}
-                      {declaredWinnerId && (
-                        <View style={styles.winnerAnnouncementBox}>
-                          <Ionicons name="trophy" size={28} color="#FFD700" />
-                          <Text style={styles.winnerAnnouncementText}>
-                            {declaredWinnerId === currentUser?.id
-                              ? '🎉 You won this challenge!'
-                              : `${participants.find(p => p.user_id === declaredWinnerId)?.profile?.name || 'Someone'} won!`}
-                          </Text>
-                          {declaredWinnerId === currentUser?.id && (
-                            <TouchableOpacity
-                              style={styles.claimButton}
-                              onPress={() =>
-                                navigation.navigate('Payout', {
-                                  goalListId:   currentGoalList.id,
-                                  goalListName: currentGoalList.name,
-                                  totalAmount:  String(currentGoalList.total_pot || 0),
-                                })
-                              }
-                            >
-                              <Ionicons name="cash-outline" size={18} color="#ffffff" />
-                              <Text style={styles.claimButtonText}>
-                                Claim ${(currentGoalList.prize_pool_amount || (currentGoalList.total_pot || 0) * 0.9).toFixed(2)}
-                              </Text>
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      )}
+                      <View style={styles.winnerAnnouncementBox}>
+                        <Ionicons name="trophy" size={28} color="#FFD700" />
+                        <Text style={styles.winnerAnnouncementText}>
+                          {declaredWinnerId === currentUser?.id
+                            ? '🎉 You won this challenge!'
+                            : `${participants.find(p => p.user_id === declaredWinnerId)?.profile?.name || 'Someone'} won!`}
+                        </Text>
+                        {declaredWinnerId === currentUser?.id && (
+                          <TouchableOpacity
+                            style={styles.claimButton}
+                            onPress={() =>
+                              navigation.navigate('Payout', {
+                                goalListId:   currentGoalList.id,
+                                goalListName: currentGoalList.name,
+                                totalAmount:  String(currentGoalList.total_pot || 0),
+                              })
+                            }
+                          >
+                            <Ionicons name="cash-outline" size={18} color="#ffffff" />
+                            <Text style={styles.claimButtonText}>
+                              Claim ${(currentGoalList.prize_pool_amount || (currentGoalList.total_pot || 0) * 0.9).toFixed(2)}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
                     </View>
                   )}
 
@@ -3818,61 +3721,6 @@ const styles = StyleSheet.create({
   winnerZone: {
     marginTop: 16,
     gap: 12,
-  },
-  declareWinnerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1a1a00',
-    borderWidth: 1,
-    borderColor: '#FFD700',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    gap: 8,
-  },
-  declareWinnerButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFD700',
-  },
-  winnerPickerContainer: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-    padding: 16,
-    gap: 4,
-  },
-  winnerPickerTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#888888',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  winnerPickerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: '#2a2a2a',
-  },
-  winnerPickerName: {
-    fontSize: 15,
-    color: '#ffffff',
-    fontWeight: '500',
-  },
-  winnerPickerCancel: {
-    paddingTop: 12,
-    alignItems: 'center',
-  },
-  winnerPickerCancelText: {
-    fontSize: 14,
-    color: '#888888',
   },
   winnerAnnouncementBox: {
     backgroundColor: '#1a1500',
