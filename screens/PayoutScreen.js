@@ -27,22 +27,18 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 import { useFocusEffect } from '@react-navigation/native';
-
-// ─── Supabase project config ────────────────────────────────────────────────
-const SUPABASE_URL      = 'https://xwkgmewbzohylnjirxaw.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3a2dtZXdiem9oeWxuamlyeGF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3NTMzMDQsImV4cCI6MjA4NjMyOTMwNH0.hq4yiRGeCaJThwbFtULhUete6mZHnOkSLKzMHCpJvL4';
 
 const PLATFORM_FEE_PERCENT = 0.10; // 10 %
 
-// ─── Helper: call the process-payout edge function ──────────────────────────
 async function callProcessPayout(payload) {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/process-payout`, {
+  const response = await fetch(`${getSupabaseFunctionsUrl()}/process-payout`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'apikey':        SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'apikey': getSupabaseAnonKey(),
+      'Authorization': `Bearer ${getSupabaseAnonKey()}`,
     },
     body: JSON.stringify(payload),
   });

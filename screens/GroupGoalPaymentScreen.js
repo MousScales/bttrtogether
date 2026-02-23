@@ -13,8 +13,7 @@ import {
 import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3a2dtZXdiem9oeWxuamlyeGF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3NTMzMDQsImV4cCI6MjA4NjMyOTMwNH0.hq4yiRGeCaJThwbFtULhUete6mZHnOkSLKzMHCpJvL4';
+import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 
 export default function GroupGoalPaymentScreen({ navigation, route }) {
   const { goalListId, amount, goalListName } = route.params;
@@ -39,14 +38,12 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
         return;
       }
 
-      const response = await fetch(
-        `https://xwkgmewbzohylnjirxaw.supabase.co/functions/v1/super-handler`,
-        {
+      const response = await fetch(`${getSupabaseFunctionsUrl()}/super-handler`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'apikey': getSupabaseAnonKey(),
+            'Authorization': `Bearer ${getSupabaseAnonKey()}`,
           },
           body: JSON.stringify({
             goal_list_id: goalListId,

@@ -46,11 +46,11 @@ module.exports = {
       eas: {
         projectId: "c30cd483-b26d-459c-b7fd-acf9aad7744d"
       },
-      // Load Stripe keys from environment variables
-      // Try multiple common variable name patterns
-      stripePublishableKey: 
-        process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY || 
-        process.env.STRIPE_PUBLISHABLE_KEY || 
+      supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
+      supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
+      stripePublishableKey:
+        process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ||
+        process.env.STRIPE_PUBLISHABLE_KEY ||
         process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY ||
         process.env.STRIPE_PUBLISHABLE ||
         process.env.STRIPE_KEY ||
