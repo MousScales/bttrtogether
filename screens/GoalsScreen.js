@@ -3,7 +3,7 @@ import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Modal, Animated, 
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
-import { supabase } from '../lib/supabase';
+import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
 
 // Generate completion history based on goal creation date
 // Returns array where index 0 is the creation day, and we show future days
@@ -526,7 +526,6 @@ export default function GoalsScreen({ navigation }) {
         .single();
       setCurrentUserProfile(profile || null);
 
-      // Hard-coded group goal requires payment
       // Check if owner has paid for group goals
       if (currentGoalList.type === 'group') {
         // Verify user has access to this goal list (either owner or participant)
@@ -1779,8 +1778,8 @@ export default function GoalsScreen({ navigation }) {
                       origin="32, 32"
                     />
                   </Svg>
-                  {friend.emoji && (friend.emoji.startsWith('http://') || friend.emoji.startsWith('https://')) ? (
-                    <Image source={{ uri: friend.emoji }} style={styles.avatarImageInRing} />
+                  {getAvatarDisplayUrl(friend.emoji) ? (
+                    <Image source={{ uri: getAvatarDisplayUrl(friend.emoji) }} style={styles.avatarImageInRing} />
                   ) : (
                     <Text style={styles.avatarEmoji}>{friend.emoji || '👤'}</Text>
                   )}
@@ -1970,8 +1969,8 @@ export default function GoalsScreen({ navigation }) {
                     }}
                   >
                     <View style={styles.otherUserAvatar}>
-                      {item.user_avatar && (item.user_avatar.startsWith('http://') || item.user_avatar.startsWith('https://')) ? (
-                        <Image source={{ uri: item.user_avatar }} style={styles.otherUserAvatarImage} />
+                      {getAvatarDisplayUrl(item.user_avatar) ? (
+                        <Image source={{ uri: getAvatarDisplayUrl(item.user_avatar) }} style={styles.otherUserAvatarImage} />
                       ) : (
                         <Text style={styles.otherUserAvatarEmoji}>{item.user_avatar || '👤'}</Text>
                       )}
@@ -2251,10 +2250,9 @@ export default function GoalsScreen({ navigation }) {
 
       {/* Payment Overlay - Outside ScrollView for proper positioning */}
       {currentGoalList?.type === 'group' && currentUser && !switchingGoal && (() => {
-        // Only show overlay if participants are loaded for this goal list
         const participantsForThisList = participants.filter(p => p.goal_list_id === currentGoalList.id);
+        // If we have participants but none for this list, wait for load (avoid showing wrong list's data)
         if (participantsForThisList.length === 0 && participants.length > 0) {
-          // Participants don't match current goal list, don't show overlay yet
           return null;
         }
         
@@ -2284,8 +2282,13 @@ export default function GoalsScreen({ navigation }) {
             {/* Blurred Background */}
             <View style={styles.paymentOverlayBackdrop} />
             
-            {/* Content directly on blurred background */}
+            {/* Content directly on blurred background - scrollable so overlay stays usable when content grows (e.g. after accept/Begin) */}
             <View style={styles.paymentOverlayContent}>
+              <ScrollView
+                style={styles.paymentOverlayScroll}
+                contentContainerStyle={styles.paymentOverlayScrollContent}
+                showsVerticalScrollIndicator={true}
+              >
               {/* Total Amount at Top - Only for money */}
               {currentGoalList.consequence_type === 'money' && (
                 <View style={styles.totalAmountContainer}>
@@ -2340,9 +2343,9 @@ export default function GoalsScreen({ navigation }) {
                           <View key={participant.id} style={styles.youStatusItemNoBox}>
                             <View style={styles.youStatusLeft}>
                               <View style={styles.youStatusAvatar}>
-                                {profile.avatar_url ? (
+                                {getAvatarDisplayUrl(profile.avatar_url) ? (
                                   <Image 
-                                    source={{ uri: profile.avatar_url }} 
+                                    source={{ uri: getAvatarDisplayUrl(profile.avatar_url) }} 
                                     style={styles.youStatusAvatarImage}
                                     resizeMode="cover"
                                   />
@@ -2482,9 +2485,9 @@ export default function GoalsScreen({ navigation }) {
                                 >
                                   <View style={styles.friendItemLeft}>
                                     <View style={styles.friendItemAvatar}>
-                                      {friend.avatar_url ? (
+                                      {getAvatarDisplayUrl(friend.avatar_url) ? (
                                         <Image 
-                                          source={{ uri: friend.avatar_url }} 
+                                          source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }} 
                                           style={styles.friendItemAvatarImage}
                                           resizeMode="cover"
                                         />
@@ -2531,9 +2534,9 @@ export default function GoalsScreen({ navigation }) {
                                 >
                                   <View style={styles.friendItemLeft}>
                                     <View style={styles.friendItemAvatar}>
-                                      {friend.avatar_url ? (
+                                      {getAvatarDisplayUrl(friend.avatar_url) ? (
                                         <Image
-                                          source={{ uri: friend.avatar_url }}
+                                          source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }}
                                           style={styles.friendItemAvatarImage}
                                           resizeMode="cover"
                                         />
@@ -2587,9 +2590,9 @@ export default function GoalsScreen({ navigation }) {
                           <View key={participant.id} style={styles.youStatusItemNoBox}>
                             <View style={styles.youStatusLeft}>
                               <View style={styles.youStatusAvatar}>
-                                {profile.avatar_url ? (
+                                {getAvatarDisplayUrl(profile.avatar_url) ? (
                                   <Image 
-                                    source={{ uri: profile.avatar_url }} 
+                                    source={{ uri: getAvatarDisplayUrl(profile.avatar_url) }} 
                                     style={styles.youStatusAvatarImage}
                                     resizeMode="cover"
                                   />
@@ -2809,9 +2812,9 @@ export default function GoalsScreen({ navigation }) {
                                 >
                                   <View style={styles.friendItemLeft}>
                                     <View style={styles.friendItemAvatar}>
-                                      {friend.avatar_url ? (
+                                      {getAvatarDisplayUrl(friend.avatar_url) ? (
                                         <Image
-                                          source={{ uri: friend.avatar_url }}
+                                          source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }}
                                           style={styles.friendItemAvatarImage}
                                           resizeMode="cover"
                                         />
@@ -2858,9 +2861,9 @@ export default function GoalsScreen({ navigation }) {
                                 >
                                   <View style={styles.friendItemLeft}>
                                     <View style={styles.friendItemAvatar}>
-                                      {friend.avatar_url ? (
+                                      {getAvatarDisplayUrl(friend.avatar_url) ? (
                                         <Image
-                                          source={{ uri: friend.avatar_url }}
+                                          source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }}
                                           style={styles.friendItemAvatarImage}
                                           resizeMode="cover"
                                         />
@@ -2900,6 +2903,7 @@ export default function GoalsScreen({ navigation }) {
                 </>
               )}
               
+              </ScrollView>
             </View>
           </View>
         );
@@ -3571,9 +3575,15 @@ const styles = StyleSheet.create({
   paymentOverlayContent: {
     width: '90%',
     maxWidth: 420,
+    height: '90%',
     maxHeight: '90%',
     zIndex: 10000,
     elevation: 10000,
+  },
+  paymentOverlayScroll: {
+    flex: 1,
+  },
+  paymentOverlayScrollContent: {
     paddingHorizontal: 20,
     paddingTop: 100,
     paddingBottom: 40,

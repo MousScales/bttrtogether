@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import React from 'react';
 
@@ -745,9 +745,9 @@ export default function ProfileScreen({ navigation }) {
         {/* Profile row: big circle + name / username / email to the right */}
         <View style={styles.profileRow}>
           <View style={styles.profileAvatarWrap}>
-            {profile?.avatar_url ? (
+            {getAvatarDisplayUrl(profile?.avatar_url) ? (
               <Image
-                source={{ uri: profile.avatar_url }}
+                source={{ uri: getAvatarDisplayUrl(profile.avatar_url) }}
                 style={styles.profileAvatar}
                 resizeMode="cover"
               />
@@ -1180,11 +1180,15 @@ export default function ProfileScreen({ navigation }) {
             {friends.map((friend) => (
               <TouchableOpacity key={friend.id} style={styles.friendCard}>
                 <View style={styles.friendCardAvatar}>
-                  {friend.avatar && (friend.avatar.startsWith('http://') || friend.avatar.startsWith('https://')) ? (
-                    <Image source={{ uri: friend.avatar }} style={styles.friendCardAvatarImage} resizeMode="cover" />
-                  ) : (
-                    <Text style={styles.friendCardEmoji}>{friend.avatar || '👤'}</Text>
-                  )}
+                  {(() => {
+                    const avatarSrc = friend.avatar || friend.avatar_url;
+                    const displayUrl = avatarSrc && (avatarSrc.startsWith('http://') || avatarSrc.startsWith('https://')) ? avatarSrc : getAvatarDisplayUrl(avatarSrc);
+                    return displayUrl ? (
+                      <Image source={{ uri: displayUrl }} style={styles.friendCardAvatarImage} resizeMode="cover" />
+                    ) : (
+                      <Text style={styles.friendCardEmoji}>{avatarSrc || '👤'}</Text>
+                    );
+                  })()}
                 </View>
                 <Text style={styles.friendCardName}>{friend.name}</Text>
                 <Text style={styles.friendCardHandle}>{friend.handle}</Text>
