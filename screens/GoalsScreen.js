@@ -164,6 +164,10 @@ export default function GoalsScreen({ navigation }) {
   const [participantPersonalGoals, setParticipantPersonalGoals] = useState({}); // { userId: [goals] }
   const [goalListStarted, setGoalListStarted] = useState(false); // Track if goal list has been started
   const [declaredWinnerId, setDeclaredWinnerId] = useState(null); // winner_id from goal_lists
+
+  // Ref so loadGoals (from Realtime/focus) always uses latest selection and never overwrites a user switch
+  const currentGoalListRef = React.useRef(null);
+  currentGoalListRef.current = currentGoalList;
   
   // Deadline - set to February 15, 2026 for example
   const deadline = new Date('2026-02-15T23:59:59');
@@ -182,14 +186,13 @@ export default function GoalsScreen({ navigation }) {
     loadGoals();
   }, []);
 
-  // Reload goals when screen comes into focus (e.g. after adding a post)
+  // Reload goals when screen comes into focus (e.g. after adding a post) — not when only switching lists
   useFocusEffect(
     React.useCallback(() => {
       loadGoals();
-      if (currentGoalList) {
-        checkOwnerPaymentStatus();
-      }
-    }, [currentGoalList])
+      const list = currentGoalListRef.current;
+      if (list) checkOwnerPaymentStatus();
+    }, []) // empty deps: run only on focus, so switching lists won't re-trigger and overwrite selection
   );
 
   // Realtime: refetch when goals, lists, participants, completions, validations or payments change
@@ -1238,17 +1241,17 @@ export default function GoalsScreen({ navigation }) {
 
         setGoalLists(allLists);
 
-        // Keep current selection in sync with server (cross-device: started_at, posts, etc.)
-        if (currentGoalList?.id) {
-          const freshList = allLists.find((l) => l.id === currentGoalList.id);
+        // Use ref so we never overwrite a user's list switch with stale closure (e.g. from Realtime/focus)
+        const selected = currentGoalListRef.current;
+        if (selected?.id) {
+          const freshList = allLists.find((l) => l.id === selected.id);
           if (freshList) setCurrentGoalList(freshList);
         } else if (allLists.length > 0) {
           setCurrentGoalList(allLists[0]);
         }
 
-        // Load goals for current goal list (when Realtime fires, closure may have stale null — fallback to first list so we don't clear goals)
-        const listToLoad = currentGoalList?.id
-          ? (allLists.find((l) => l.id === currentGoalList.id) || currentGoalList)
+        const listToLoad = selected?.id
+          ? (allLists.find((l) => l.id === selected.id) || selected)
           : (allLists?.length ? allLists[0] : null);
         if (listToLoad) {
           // Check if owner has paid for group goals with payment required
@@ -2075,8 +2078,8 @@ export default function GoalsScreen({ navigation }) {
           activeOpacity={1}
           onPress={() => setDropdownVisible(false)}
         >
-          <View style={styles.dropdownMenuContainer}>
-            <View style={styles.dropdownMenu}>
+          <View style={styles.dropdownMenuContainer} pointerEvents="box-none">
+            <View style={styles.dropdownMenu} pointerEvents="box-none">
               {goalLists.map((list) => (
                 <TouchableOpacity
                   key={list.id}
@@ -2086,7 +2089,6 @@ export default function GoalsScreen({ navigation }) {
                   ]}
                   onPress={() => {
                     setDropdownVisible(false);
-                    // Set the new current goal list - useEffect will handle loading
                     setCurrentGoalList(list);
                   }}
                 >
