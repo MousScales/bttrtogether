@@ -682,70 +682,88 @@ export default function ProfileScreen({ navigation }) {
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        {/* Header Section */}
-        <View style={styles.headerSection}>
-          {/* Top Icons */}
-          <View style={styles.topIcons}>
-            <View style={styles.spacer} />
-            <View style={styles.topRight}>
-              <TouchableOpacity style={styles.iconButton}>
-                <Ionicons name="share-outline" size={24} color="#ffffff" />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.iconButton}
-                onPress={() => {
-                  setFriendSearchModalVisible(true);
-                  setSearchQuery('');
-                  setSearchResults([]);
-                }}
-              >
-                <Ionicons name="person-add-outline" size={24} color="#ffffff" />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.iconButton}
-                onPress={() => navigation.navigate('Settings')}
-              >
-                <Ionicons name="settings-outline" size={24} color="#ffffff" />
-              </TouchableOpacity>
-            </View>
+        {/* Header Section: Top icons */}
+        <View style={styles.topIcons}>
+          <View style={styles.spacer} />
+          <View style={styles.topRight}>
+            <TouchableOpacity style={styles.iconButton}>
+              <Ionicons name="share-outline" size={24} color="#ffffff" />
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.iconButton}
+              onPress={() => {
+                setFriendSearchModalVisible(true);
+                setSearchQuery('');
+                setSearchResults([]);
+              }}
+            >
+              <Ionicons name="person-add-outline" size={24} color="#ffffff" />
+            </TouchableOpacity>
           </View>
+        </View>
 
-          {/* Profile Avatar */}
-          <View style={styles.avatarContainer}>
+        {/* Profile row: big circle + name / username / email to the right */}
+        <View style={styles.profileRow}>
+          <View style={styles.profileAvatarWrap}>
             {profile?.avatar_url ? (
-            <Image
+              <Image
                 source={{ uri: profile.avatar_url }}
-              style={styles.avatar}
-              resizeMode="cover"
-            />
+                style={styles.profileAvatar}
+                resizeMode="cover"
+              />
             ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Ionicons name="person" size={40} color="#666666" />
+              <View style={styles.profileAvatarPlaceholder}>
+                <Ionicons name="person" size={56} color="#666666" />
               </View>
             )}
           </View>
+          <View style={styles.profileInfo}>
+            <Text style={styles.profileName} numberOfLines={1}>{profile?.name || 'User'}</Text>
+            <Text style={styles.profileHandle} numberOfLines={1}>@{profile?.username || 'username'}</Text>
+            <Text style={styles.profileEmail} numberOfLines={1}>{currentUser?.email || ''}</Text>
+          </View>
+        </View>
 
-          {/* Name and Handle */}
-          <Text style={styles.name}>{profile?.name || 'User'}</Text>
-          <Text style={styles.handle}>@{profile?.username || 'username'}</Text>
-
-          {/* Stats Badges */}
-          <View style={styles.badgesRow}>
-            {dateJoined && (
+        {/* Stats */}
+        <View style={styles.badgesRow}>
+          {dateJoined && (
             <View style={styles.badge}>
               <Ionicons name="calendar-outline" size={16} color="#ffffff" />
-                <Text style={styles.badgeText}>
-                  {dateJoined.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </Text>
-            </View>
-            )}
-            <View style={styles.badge}>
-              <Ionicons name="flame" size={16} color="#FF6B35" />
               <Text style={styles.badgeText}>
-                {streak} Day{streak !== 1 ? 's' : ''} Streak
+                Joined {dateJoined.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
               </Text>
             </View>
+          )}
+          <View style={styles.badge}>
+            <Ionicons name="flame" size={16} color="#FF6B35" />
+            <Text style={styles.badgeText}>
+              {streak} Day{streak !== 1 ? 's' : ''} Streak
+            </Text>
           </View>
+        </View>
+
+        {/* Preferences & Log out */}
+        <View style={styles.profileActions}>
+          <TouchableOpacity
+            style={styles.profileActionRow}
+            onPress={() => navigation.navigate('Settings')}
+          >
+            <Ionicons name="settings-outline" size={22} color="#ffffff" />
+            <Text style={styles.profileActionText}>Preferences</Text>
+            <Ionicons name="chevron-forward" size={20} color="#888888" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.profileActionRow, styles.profileActionRowLogout]}
+            onPress={() => {
+              Alert.alert('Log out', 'Are you sure you want to log out?', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Log out', style: 'destructive', onPress: () => supabase.auth.signOut() },
+              ]);
+            }}
+          >
+            <Ionicons name="log-out-outline" size={22} color="#ff4444" />
+            <Text style={styles.profileActionTextLogout}>Log out</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Friend Requests Section */}
@@ -1079,7 +1097,11 @@ export default function ProfileScreen({ navigation }) {
             {friends.map((friend) => (
               <TouchableOpacity key={friend.id} style={styles.friendCard}>
                 <View style={styles.friendCardAvatar}>
-                  <Text style={styles.friendCardEmoji}>{friend.avatar}</Text>
+                  {friend.avatar && (friend.avatar.startsWith('http://') || friend.avatar.startsWith('https://')) ? (
+                    <Image source={{ uri: friend.avatar }} style={styles.friendCardAvatarImage} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.friendCardEmoji}>{friend.avatar || '👤'}</Text>
+                  )}
                 </View>
                 <Text style={styles.friendCardName}>{friend.name}</Text>
                 <Text style={styles.friendCardHandle}>{friend.handle}</Text>
@@ -1217,19 +1239,14 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingBottom: 32,
-  },
-  headerSection: {
-    alignItems: 'center',
-    paddingTop: 60,
-    paddingBottom: 24,
-    backgroundColor: '#0a0a0a',
+    paddingTop: 56,
   },
   topIcons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     width: '100%',
     paddingHorizontal: 16,
-    marginBottom: 20,
+    marginBottom: 24,
   },
   spacer: {
     width: 44,
@@ -1246,44 +1263,93 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+  profileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  profileAvatarWrap: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
     overflow: 'hidden',
     backgroundColor: '#2a2a2a',
     borderWidth: 3,
     borderColor: '#333333',
-    marginBottom: 12,
   },
-  avatar: {
+  profileAvatar: {
     width: '100%',
     height: '100%',
   },
-  avatarPlaceholder: {
+  profileAvatarPlaceholder: {
     width: '100%',
     height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#2a2a2a',
+  },
+  profileInfo: {
+    flex: 1,
+    marginLeft: 20,
+    justifyContent: 'center',
+    minWidth: 0,
+  },
+  profileName: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+  profileHandle: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#888888',
+    marginBottom: 4,
+  },
+  profileEmail: {
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#666666',
+  },
+  profileActions: {
+    marginHorizontal: 16,
+    marginBottom: 24,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    overflow: 'hidden',
+  },
+  profileActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+  },
+  profileActionText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  profileActionRowLogout: {
+    borderBottomWidth: 0,
+  },
+  profileActionTextLogout: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ff4444',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#000000',
-  },
-  name: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#ffffff',
-    marginBottom: 4,
-  },
-  handle: {
-    fontSize: 16,
-    fontWeight: '400',
-    color: '#888888',
-    marginBottom: 20,
   },
   actionButtons: {
     flexDirection: 'row',
@@ -1320,7 +1386,8 @@ const styles = StyleSheet.create({
   badgesRow: {
     flexDirection: 'row',
     gap: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
+    marginBottom: 24,
   },
   badge: {
     flexDirection: 'row',
@@ -1610,9 +1677,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a2a2a',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
     borderWidth: 2,
     borderColor: '#333333',
     marginBottom: 12,
+  },
+  friendCardAvatarImage: {
+    width: '100%',
+    height: '100%',
   },
   friendCardEmoji: {
     fontSize: 40,

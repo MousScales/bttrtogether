@@ -1,4 +1,4 @@
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
@@ -178,9 +178,36 @@ function MainTabs() {
         />
         <Tab.Screen 
           name="Profile" 
-        component={ProfileStack}
-          options={{
-            headerShown: false,
+          component={ProfileStack}
+          options={({ route }) => {
+            const routeName = getFocusedRouteNameFromRoute(route) ?? 'ProfileHome';
+            const hideTabBar = routeName === 'Settings';
+            return {
+              headerShown: false,
+              tabBarStyle: hideTabBar
+                ? { display: 'none' }
+                : {
+                    position: 'absolute',
+                    bottom: 30,
+                    alignSelf: 'center',
+                    width: 280,
+                    marginLeft: 75,
+                    backgroundColor: '#1a1a1a',
+                    borderRadius: 35,
+                    height: 65,
+                    borderTopWidth: 0,
+                    borderWidth: 1,
+                    borderColor: '#333333',
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: 0.4,
+                    shadowRadius: 10,
+                    elevation: 10,
+                    paddingHorizontal: 20,
+                    paddingTop: 10,
+                    paddingBottom: 10,
+                  },
+            };
           }}
         />
       </Tab.Navigator>
