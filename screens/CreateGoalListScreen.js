@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
 
 export default function CreateGoalListScreen({ navigation, route }) {
   const isOnboarding = route?.params?.isOnboarding || false;
@@ -554,36 +554,8 @@ export default function CreateGoalListScreen({ navigation, route }) {
           console.error('Error adding participants:', participantsError);
           // Show error but don't block - goal list is already created
           Alert.alert('Warning', 'Goal list created but some participants could not be added. You can add them later.');
-        } else {
-          // Create group goals for all participants (including creator)
-          if (goalListData.groupGoals && goalListData.groupGoals.length > 0) {
-            const allParticipantIds = participants.map(p => p.user_id);
-            const groupGoalsToInsert = [];
-            
-            allParticipantIds.forEach(participantId => {
-              goalListData.groupGoals.forEach(goalTitle => {
-                groupGoalsToInsert.push({
-                  user_id: participantId,
-                  goal_list_id: goalList.id,
-                  title: goalTitle,
-                  goal_type: 'group',
-                  completed: false,
-                });
-              });
-            });
-
-            if (groupGoalsToInsert.length > 0) {
-              const { error: groupGoalsError } = await supabase
-                .from('goals')
-                .insert(groupGoalsToInsert);
-
-              if (groupGoalsError) {
-                console.error('Error creating group goals for participants:', groupGoalsError);
-                // Don't block - goal list is already created
-              }
-            }
-          }
         }
+        // Group goals are shared: only the creator has goal rows. Participants see and complete the same goals via goal_completions.
 
         // Update goal list to require payment if consequence type is money
         if (goalListData.consequenceType === 'money') {
@@ -1169,9 +1141,9 @@ export default function CreateGoalListScreen({ navigation, route }) {
                         disabled={isAlreadyAdded && !isSelected}
                       >
                         <View style={styles.friendSearchResultAvatar}>
-                          {user.avatar_url ? (
+                          {getAvatarDisplayUrl(user.avatar_url) ? (
                             <Image
-                              source={{ uri: user.avatar_url }}
+                              source={{ uri: getAvatarDisplayUrl(user.avatar_url) }}
                               style={styles.friendSearchResultAvatarImage}
                               resizeMode="cover"
                             />
@@ -1217,9 +1189,9 @@ export default function CreateGoalListScreen({ navigation, route }) {
                         disabled={isAlreadyAdded && !isSelected}
                       >
                         <View style={styles.friendSearchResultAvatar}>
-                          {user.avatar_url ? (
+                          {getAvatarDisplayUrl(user.avatar_url) ? (
                             <Image
-                              source={{ uri: user.avatar_url }}
+                              source={{ uri: getAvatarDisplayUrl(user.avatar_url) }}
                               style={styles.friendSearchResultAvatarImage}
                               resizeMode="cover"
                             />
@@ -1257,13 +1229,13 @@ export default function CreateGoalListScreen({ navigation, route }) {
                   {goalListData.friends.map((friend) => (
                     <View key={friend.id} style={styles.friendListItem}>
                       <View style={styles.friendListAvatar}>
-                        {friend.avatar_url ? (
-                          <Image
-                            source={{ uri: friend.avatar_url }}
-                            style={styles.friendListAvatarImage}
-                            resizeMode="cover"
-                          />
-                        ) : (
+{getAvatarDisplayUrl(friend.avatar_url) ? (
+                        <Image
+                          source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }}
+                          style={styles.friendListAvatarImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
                           <Ionicons name="person" size={20} color="#666666" />
                         )}
                       </View>

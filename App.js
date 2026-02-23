@@ -165,8 +165,35 @@ function MainTabs() {
         <Tab.Screen 
           name="Goals" 
           component={GoalsStack}
-          options={{
-            headerShown: false,
+          options={({ route }) => {
+            const routeName = getFocusedRouteNameFromRoute(route) ?? 'GoalsHome';
+            const hideTabBar = routeName !== 'GoalsHome' && routeName !== 'UserGoals';
+            return {
+              headerShown: false,
+              tabBarStyle: hideTabBar
+                ? { display: 'none' }
+                : {
+                    position: 'absolute',
+                    bottom: 30,
+                    alignSelf: 'center',
+                    width: 280,
+                    marginLeft: 75,
+                    backgroundColor: '#1a1a1a',
+                    borderRadius: 35,
+                    height: 65,
+                    borderTopWidth: 0,
+                    borderWidth: 1,
+                    borderColor: '#333333',
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 4 },
+                    shadowOpacity: 0.4,
+                    shadowRadius: 10,
+                    elevation: 10,
+                    paddingHorizontal: 20,
+                    paddingTop: 10,
+                    paddingBottom: 10,
+                  },
+            };
           }}
         />
         <Tab.Screen 

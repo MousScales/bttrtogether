@@ -6,10 +6,11 @@ import {
   TouchableOpacity,
   TextInput,
   ScrollView,
-  SafeAreaView,
   Alert,
   Animated,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 
@@ -67,28 +68,31 @@ export default function AddGoalsScreen({ navigation, route }) {
       if (listError) throw listError;
       setGoalList(goalListData);
 
-      // Load group goals (goals with goal_type = 'group') - get unique titles from any user
-      const { data: allGroupGoals, error: groupError } = await supabase
-        .from('goals')
-        .select('title, created_at')
-        .eq('goal_list_id', goalListId)
-        .eq('goal_type', 'group')
-        .order('created_at', { ascending: true });
-
-      if (groupError) {
-        console.error('Error loading group goals:', groupError);
-        setGroupGoals([]);
+      // Load creator's group goal titles only (shared group goals; participants don't have their own rows)
+      const ownerId = goalListData?.user_id;
+      if (ownerId) {
+        const { data: ownerGroupGoals, error: groupError } = await supabase
+          .from('goals')
+          .select('title, created_at')
+          .eq('goal_list_id', goalListId)
+          .eq('user_id', ownerId)
+          .eq('goal_type', 'group')
+          .order('created_at', { ascending: true });
+        if (!groupError && ownerGroupGoals?.length) {
+          const seen = new Set();
+          const unique = [];
+          ownerGroupGoals.forEach(goal => {
+            if (!seen.has(goal.title)) {
+              seen.add(goal.title);
+              unique.push({ id: goal.title, title: goal.title });
+            }
+          });
+          setGroupGoals(unique);
+        } else {
+          setGroupGoals([]);
+        }
       } else {
-        // Get unique group goal titles
-        const seenTitles = new Set();
-        const uniqueGroupGoals = [];
-        allGroupGoals?.forEach(goal => {
-          if (!seenTitles.has(goal.title)) {
-            seenTitles.add(goal.title);
-            uniqueGroupGoals.push({ id: goal.title, title: goal.title });
-          }
-        });
-        setGroupGoals(uniqueGroupGoals);
+        setGroupGoals([]);
       }
 
       // Load user's personal goals for this goal list
@@ -115,26 +119,7 @@ export default function AddGoalsScreen({ navigation, route }) {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // If this is the first personal goal being added, automatically create group goals for this user
-      if (personalGoals.length === 0 && groupGoals.length > 0) {
-        const groupGoalsToInsert = groupGoals.map(groupGoal => ({
-          user_id: user.id,
-          goal_list_id: goalListId,
-          title: groupGoal.title,
-          goal_type: 'group',
-          completed: false,
-        }));
-
-        const { error: groupGoalsError } = await supabase
-          .from('goals')
-          .insert(groupGoalsToInsert);
-
-        if (groupGoalsError) {
-          console.error('Error adding group goals:', groupGoalsError);
-          // Continue anyway - don't block personal goal addition
-        }
-      }
-
+      // Group goals are creator-only; participants don't get their own group goal rows
       const { data, error } = await supabase
         .from('goals')
         .insert({
@@ -183,30 +168,10 @@ export default function AddGoalsScreen({ navigation, route }) {
   };
 
   const handleSkip = async () => {
-    // If skipping, still need to create group goals if they exist
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-
-      if (groupGoals.length > 0) {
-        const groupGoalsToInsert = groupGoals.map(groupGoal => ({
-          user_id: user.id,
-          goal_list_id: goalListId,
-          title: groupGoal.title,
-          goal_type: 'group',
-          completed: false,
-        }));
-
-        const { error: groupGoalsError } = await supabase
-          .from('goals')
-          .insert(groupGoalsToInsert);
-
-        if (groupGoalsError) {
-          console.error('Error adding group goals:', groupGoalsError);
-        }
-      }
-
-      // Proceed to payment/acceptance
+      // Group goals are creator-only; no need to create participant copies
       handleProceed();
     } catch (error) {
       console.error('Error skipping:', error);
@@ -215,6 +180,7 @@ export default function AddGoalsScreen({ navigation, route }) {
   };
 
   const handleProceed = async () => {
+    // Group goals are creator-only; participants just proceed (they'll see creator's group goals on GoalsScreen)
     // Navigate to payment or show punishment confirmation based on consequence type
     if (consequenceType === 'money') {
       navigation.navigate('GroupGoalPayment', {
@@ -255,7 +221,7 @@ export default function AddGoalsScreen({ navigation, route }) {
   // Show punishment confirmation screen
   if (showPunishmentConfirm && goalList?.consequence) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => setShowPunishmentConfirm(false)} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="#ffffff" />
@@ -264,7 +230,11 @@ export default function AddGoalsScreen({ navigation, route }) {
           <View style={styles.placeholder} />
         </View>
 
-        <View style={styles.stepContainer}>
+        <ScrollView
+          style={styles.stepContainer}
+          contentContainerStyle={styles.punishmentScrollContent}
+          showsVerticalScrollIndicator={true}
+        >
           <Text style={[styles.stepTitle, styles.centeredTitle]}>Punishment</Text>
           
           <View style={styles.punishmentContainer}>
@@ -290,13 +260,13 @@ export default function AddGoalsScreen({ navigation, route }) {
               <Text style={styles.acceptPunishmentButtonText}>Accept</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#ffffff" />
@@ -309,7 +279,12 @@ export default function AddGoalsScreen({ navigation, route }) {
         <Text style={[styles.stepTitle, styles.centeredTitle]}>Add Your Goals</Text>
         
         {/* Goals List */}
-        <ScrollView style={styles.goalsPreviewList} contentContainerStyle={styles.goalsPreviewContent}>
+        <ScrollView
+          style={styles.goalsPreviewList}
+          contentContainerStyle={styles.goalsPreviewContent}
+          showsVerticalScrollIndicator={true}
+          keyboardShouldPersistTaps="handled"
+        >
           {/* Group Goals Section - Always show if group goals exist */}
           <Text style={styles.goalSectionTitle}>Group Goals (All Members)</Text>
           {groupGoals.length > 0 ? (
@@ -436,9 +411,13 @@ const styles = StyleSheet.create({
   },
   stepContainer: {
     flex: 1,
-    justifyContent: 'center',
     paddingHorizontal: 20,
-    paddingTop: 40,
+    paddingTop: 16,
+    paddingBottom: 0,
+  },
+  punishmentScrollContent: {
+    paddingTop: 24,
+    paddingBottom: 40,
   },
   stepTitle: {
     fontSize: 28,
@@ -451,9 +430,11 @@ const styles = StyleSheet.create({
   },
   goalsPreviewList: {
     flex: 1,
+    flexGrow: 1,
   },
   goalsPreviewContent: {
-    paddingBottom: 20,
+    paddingBottom: 24,
+    flexGrow: 0,
   },
   goalSectionTitle: {
     fontSize: 16,
@@ -540,7 +521,7 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   buttonContainer: {
-    paddingBottom: 20,
+    paddingBottom: Platform.OS === 'android' ? 32 : 20,
     marginTop: 20,
   },
   proceedButtonBottom: {

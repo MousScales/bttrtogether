@@ -12,7 +12,7 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
 
 export default function AddFriendsToGoalScreen({ navigation, route }) {
   const { goalListId, goalListName, onFriendsSelected } = route.params || {};
@@ -161,9 +161,9 @@ export default function AddFriendsToGoalScreen({ navigation, route }) {
                   onPress={() => toggleFriend(friend)}
                 >
                   <View style={styles.selectedFriendAvatar}>
-                    {friend.avatar_url ? (
+                    {getAvatarDisplayUrl(friend.avatar_url) ? (
                       <Image
-                        source={{ uri: friend.avatar_url }}
+                        source={{ uri: getAvatarDisplayUrl(friend.avatar_url) }}
                         style={styles.selectedFriendAvatarImage}
                         resizeMode="cover"
                       />
@@ -206,9 +206,9 @@ export default function AddFriendsToGoalScreen({ navigation, route }) {
                   onPress={() => toggleFriend(user)}
                 >
                   <View style={styles.resultAvatar}>
-                    {user.avatar_url ? (
+                    {getAvatarDisplayUrl(user.avatar_url) ? (
                       <Image
-                        source={{ uri: user.avatar_url }}
+                        source={{ uri: getAvatarDisplayUrl(user.avatar_url) }}
                         style={styles.resultAvatarImage}
                         resizeMode="cover"
                       />

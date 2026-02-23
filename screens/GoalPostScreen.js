@@ -2,7 +2,16 @@ import { StyleSheet, Text, View, TouchableOpacity, TextInput, ScrollView, Image,
 import { useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { supabase } from '../lib/supabase';
+
+/** Decode base64 to ArrayBuffer so Supabase gets real image bytes (fixes black image in RN). */
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
 export default function GoalPostScreen({ route, navigation }) {
   const { goal } = route.params;
@@ -11,7 +20,7 @@ export default function GoalPostScreen({ route, navigation }) {
 
   const pickMedia = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      mediaTypes: ['images', 'videos'],
       allowsMultipleSelection: true,
       quality: 1,
     });
@@ -53,27 +62,54 @@ export default function GoalPostScreen({ route, navigation }) {
         throw goalError;
       }
 
-      // Upload first image to storage and get public URL (if any)
-      let proofUrl = null;
+      // Upload all selected images/videos using base64 → ArrayBuffer (fixes black image in React Native)
+      const proofUrls = [];
       if (media.length > 0) {
-        const firstAsset = media[0];
-        const uri = firstAsset.uri ?? firstAsset.localUri;
-        if (uri) {
-          const response = await fetch(uri);
-          const blob = await response.blob();
-          const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
-          const fileName = `${user.id}/${goal.id}_${todayStr}.${ext}`;
-          const { error: uploadError } = await supabase.storage
-            .from('goal-proofs')
-            .upload(fileName, blob, { cacheControl: '3600', upsert: true });
-          if (!uploadError) {
-            const { data: urlData } = supabase.storage.from('goal-proofs').getPublicUrl(fileName);
-            proofUrl = urlData.publicUrl;
+        for (let i = 0; i < media.length; i++) {
+          const asset = media[i];
+          const assetUri = asset.uri ?? asset.localUri;
+          if (!assetUri) continue;
+          try {
+            let arrayBuffer;
+            try {
+              const base64 = await FileSystem.readAsStringAsync(assetUri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              if (!base64) continue;
+              arrayBuffer = base64ToArrayBuffer(base64);
+            } catch (readErr) {
+              const response = await fetch(assetUri);
+              arrayBuffer = await response.arrayBuffer();
+            }
+            const rawExt = (assetUri.split('.').pop()?.split('?')[0] || 'jpg').toLowerCase().replace(/[^a-z0-9]/gi, '') || 'jpg';
+            const ext = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'mp4', 'mov', 'webm'].includes(rawExt) ? rawExt : 'jpg';
+            const fileName = `${user.id}/${goal.id}_${todayStr}_${i}.${ext}`;
+            const contentType = /^(mp4|mov|webm|avi)$/i.test(ext) ? 'video/mp4' : (ext === 'png' ? 'image/png' : 'image/jpeg');
+            const { error: uploadError } = await supabase.storage
+              .from('goal-proofs')
+              .upload(fileName, arrayBuffer, {
+                cacheControl: '3600',
+                upsert: true,
+                contentType,
+              });
+            if (uploadError) {
+              console.error('Proof upload error:', uploadError);
+            } else {
+              const { data: urlData } = supabase.storage.from('goal-proofs').getPublicUrl(fileName);
+              if (urlData?.publicUrl) proofUrls.push(urlData.publicUrl);
+            }
+          } catch (e) {
+            console.error('Proof upload failed for item', i, e);
           }
+        }
+        if (media.length > 0 && proofUrls.length === 0) {
+          Alert.alert('Upload issue', 'Create the "goal-proofs" bucket in Supabase Storage (Public). Photos/videos could not be uploaded.');
         }
       }
 
-      // Save completion with description and proof image URL
+      const proofUrl = proofUrls[0] || null;
+
+      // Save completion with caption and all proof URLs to database
       const { error: completionError } = await supabase
         .from('goal_completions')
         .upsert({
@@ -82,13 +118,15 @@ export default function GoalPostScreen({ route, navigation }) {
           completed_at: todayStr,
           caption: caption.trim() || null,
           proof_url: proofUrl,
+          proof_urls: proofUrls.length > 0 ? proofUrls : [],
         }, {
-          onConflict: 'goal_id,completed_at'
+          onConflict: 'goal_id,user_id,completed_at'
         });
 
       if (completionError) {
         console.error('Error saving completion:', completionError);
-        // Don't throw - goal is already marked as completed
+        Alert.alert('Could not save post', completionError.message || 'Check that the goal_completions table has an INSERT policy and proof_urls column. Run add_goal_completion_proof_urls.sql in Supabase.');
+        return;
       }
 
       navigation.goBack();

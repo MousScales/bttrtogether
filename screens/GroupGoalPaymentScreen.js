@@ -5,11 +5,11 @@ import {
   View,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
   ActivityIndicator,
   Alert,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
@@ -255,7 +255,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="close" size={28} color="#ffffff" />
@@ -431,6 +431,7 @@ const styles = StyleSheet.create({
   },
   contentContainer: {
     padding: 20,
+    paddingBottom: Platform.OS === 'android' ? 40 : 20,
   },
   challengeInfo: {
     backgroundColor: '#1a1a1a',

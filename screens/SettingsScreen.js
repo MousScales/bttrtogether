@@ -14,7 +14,16 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from '../lib/supabase';
+import * as FileSystem from 'expo-file-system/legacy';
+import { supabase, getAvatarDisplayUrl, getAvatarDisplayUrlAsync } from '../lib/supabase';
+
+/** Decode base64 to ArrayBuffer so Supabase gets real image bytes (fixes black/missing pfp in RN). */
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 import { useRealtime } from '../hooks/useRealtime';
 
 export default function SettingsScreen({ navigation }) {
@@ -31,6 +40,7 @@ export default function SettingsScreen({ navigation }) {
   const [originalEmail, setOriginalEmail] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
   const [localAvatarUri, setLocalAvatarUri] = useState('');
+  const [resolvedAvatarUri, setResolvedAvatarUri] = useState('');
 
   // Preferences
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
@@ -41,6 +51,24 @@ export default function SettingsScreen({ navigation }) {
 
   // Realtime: refetch profile when it changes (e.g. from another device)
   useRealtime(['profiles'], loadProfile, 'settings-screen');
+
+  // Resolve avatar URL for display (signed URL works for private buckets)
+  useEffect(() => {
+    if (localAvatarUri) {
+      setResolvedAvatarUri(localAvatarUri);
+      return;
+    }
+    if (!avatarUrl) {
+      setResolvedAvatarUri('');
+      return;
+    }
+    let cancelled = false;
+    getAvatarDisplayUrlAsync(avatarUrl).then((url) => {
+      if (!cancelled && url) setResolvedAvatarUri(url);
+      else if (!cancelled) setResolvedAvatarUri(getAvatarDisplayUrl(avatarUrl) || avatarUrl || '');
+    }).catch(() => { if (!cancelled) setResolvedAvatarUri(getAvatarDisplayUrl(avatarUrl) || avatarUrl || ''); });
+    return () => { cancelled = true; };
+  }, [localAvatarUri, avatarUrl]);
 
   async function loadProfile() {
     try {
@@ -89,7 +117,7 @@ export default function SettingsScreen({ navigation }) {
       }
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.5,
@@ -110,28 +138,33 @@ export default function SettingsScreen({ navigation }) {
     try {
       setUploadingAvatar(true);
 
-      const response = await fetch(localAvatarUri);
-      const blob = await response.blob();
-      const fileExt = localAvatarUri.split('.').pop();
+      // Read file as base64 then ArrayBuffer (fetch+blob fails for file:// in React Native and can produce black/broken images)
+      const base64 = await FileSystem.readAsStringAsync(localAvatarUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (!base64) throw new Error('Could not read image file');
+      const arrayBuffer = base64ToArrayBuffer(base64);
+
+      const rawExt = (localAvatarUri.split('.').pop()?.split('?')[0] || 'jpg').toLowerCase().replace(/[^a-z0-9]/gi, '') || 'jpg';
+      const fileExt = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'].includes(rawExt) ? rawExt : 'jpg';
       const fileName = `${userId}/avatar.${fileExt}`;
+      const contentType = fileExt === 'png' ? 'image/png' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg';
 
       const { error: uploadError } = await supabase.storage
         .from('avatars')
-        .upload(fileName, blob, {
+        .upload(fileName, arrayBuffer, {
           cacheControl: '3600',
           upsert: true,
+          contentType,
         });
 
       if (uploadError) throw uploadError;
 
-      const { data: urlData } = supabase.storage
-        .from('avatars')
-        .getPublicUrl(fileName);
-
-      return urlData.publicUrl;
+      // Return storage path so we can use signed URLs for display (works when bucket is private)
+      return fileName;
     } catch (error) {
       console.error('Error uploading avatar:', error);
-      Alert.alert('Error', 'Failed to upload avatar: ' + error.message);
+      Alert.alert('Error', 'Failed to upload avatar: ' + (error.message || 'Unknown error'));
       return null;
     } finally {
       setUploadingAvatar(false);
@@ -181,7 +214,12 @@ export default function SettingsScreen({ navigation }) {
       let newAvatarUrl = avatarUrl;
       if (localAvatarUri) {
         const uploadedUrl = await uploadAvatar();
-        if (uploadedUrl) newAvatarUrl = uploadedUrl;
+        if (!uploadedUrl) {
+          // Upload failed; keep showing the picked image and don't overwrite profile avatar
+          setSaving(false);
+          return;
+        }
+        newAvatarUrl = uploadedUrl;
       }
 
       const { error: profileError } = await supabase
@@ -213,7 +251,7 @@ export default function SettingsScreen({ navigation }) {
       }
 
       setAvatarUrl(newAvatarUrl);
-      setLocalAvatarUri('');
+      setLocalAvatarUri(''); // Only clear after successful save so pfp doesn't disappear on upload failure
       setOriginalUsername(username);
       if (email !== originalEmail && email.trim()) setOriginalEmail(email);
     } catch (error) {
@@ -252,7 +290,7 @@ export default function SettingsScreen({ navigation }) {
     );
   }
 
-  const displayAvatar = localAvatarUri || avatarUrl;
+  const displayAvatar = localAvatarUri || resolvedAvatarUri || getAvatarDisplayUrl(avatarUrl) || avatarUrl;
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>

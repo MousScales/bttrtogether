@@ -900,9 +900,9 @@ export default function ProfileScreen({ navigation }) {
                   <View key={request.id} style={styles.friendRequestItem}>
                     <View style={styles.friendRequestLeft}>
                       <View style={styles.friendRequestAvatar}>
-                        {requester.avatar_url ? (
+                        {getAvatarDisplayUrl(requester.avatar_url) ? (
                           <Image
-                            source={{ uri: requester.avatar_url }}
+                            source={{ uri: getAvatarDisplayUrl(requester.avatar_url) }}
                             style={styles.friendRequestAvatarImage}
                             resizeMode="cover"
                           />
@@ -1321,9 +1321,9 @@ export default function ProfileScreen({ navigation }) {
                   disabled={addingFriend === user.id}
                 >
                   <View style={styles.searchResultAvatar}>
-                    {user.avatar_url ? (
+                    {getAvatarDisplayUrl(user.avatar_url) ? (
                       <Image
-                        source={{ uri: user.avatar_url }}
+                        source={{ uri: getAvatarDisplayUrl(user.avatar_url) }}
                         style={styles.searchResultAvatarImage}
                         resizeMode="cover"
                       />
