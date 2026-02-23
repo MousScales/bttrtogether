@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
+import { useRealtime } from '../hooks/useRealtime';
 
 export default function SettingsScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
@@ -37,6 +38,9 @@ export default function SettingsScreen({ navigation }) {
   useEffect(() => {
     loadProfile();
   }, []);
+
+  // Realtime: refetch profile when it changes (e.g. from another device)
+  useRealtime(['profiles'], loadProfile, 'settings-screen');
 
   async function loadProfile() {
     try {

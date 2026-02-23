@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import Svg, { Circle } from 'react-native-svg';
 import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
+import { useRealtime } from '../hooks/useRealtime';
 
 // Generate completion history based on goal creation date
 // Returns array where index 0 is the creation day, and we show future days
@@ -101,6 +102,17 @@ export default function GoalsScreen({ navigation }) {
         checkOwnerPaymentStatus();
       }
     }, [currentGoalList])
+  );
+
+  // Realtime: refetch when goals, lists, participants, completions, validations or payments change
+  useRealtime(
+    ['goal_lists', 'goals', 'group_goal_participants', 'goal_completions', 'goal_validations', 'payments'],
+    async () => {
+      await loadGoals();
+      await checkOwnerPaymentStatus();
+      await loadGroupGoals();
+    },
+    'goals-screen'
   );
 
   // Reload goals when current goal list changes

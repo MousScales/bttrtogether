@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
 import { useFocusEffect } from '@react-navigation/native';
+import { useRealtime } from '../hooks/useRealtime';
 import React from 'react';
 
 export default function ProfileScreen({ navigation }) {
@@ -32,11 +33,14 @@ export default function ProfileScreen({ navigation }) {
   const [dateJoined, setDateJoined] = useState(null);
   const [friendRequests, setFriendRequests] = useState([]); // Pending friend requests received
   const [loadingRequests, setLoadingRequests] = useState(false);
-  // Wallet: winnings from money challenges
+  // Wallet: winnings and betting stats
   const [walletPendingTotal, setWalletPendingTotal] = useState(0);
-  const [walletPendingList, setWalletPendingList] = useState([]); // { id, name, prize_pool_amount }
+  const [walletPendingList, setWalletPendingList] = useState([]);
   const [walletClaimedTotal, setWalletClaimedTotal] = useState(0);
   const [walletRecentPayouts, setWalletRecentPayouts] = useState([]);
+  const [walletTotalPaid, setWalletTotalPaid] = useState(0);       // total $ user has paid in
+  const [walletCurrentlyBetting, setWalletCurrentlyBetting] = useState(0); // $ in active challenges
+  const [walletLosses, setWalletLosses] = useState(0);             // $ lost (paid, didn't win)
 
   // Load profile and goals data
   const loadProfileData = async () => {
@@ -196,6 +200,13 @@ export default function ProfileScreen({ navigation }) {
     }, [])
   );
 
+  // Realtime: refetch profile, wallet, friends when data changes
+  useRealtime(
+    ['profiles', 'goal_lists', 'payouts', 'payments', 'friend_requests', 'friends'],
+    loadProfileData,
+    'profile-screen'
+  );
+
   // Search for users
   const searchUsers = async (query) => {
     if (!query.trim()) {
@@ -243,7 +254,7 @@ export default function ProfileScreen({ navigation }) {
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
 
-  // Load wallet: pending winnings (to claim) and total claimed
+  // Load wallet: pending/claimed winnings + paid, currently betting, losses
   const loadWalletData = async (userId) => {
     try {
       // Pending: goal lists where this user is winner and hasn't been paid out yet
@@ -270,6 +281,47 @@ export default function ProfileScreen({ navigation }) {
       const claimedTotal = list.reduce((sum, p) => sum + parseFloat(p.payout_amount || 0), 0);
       setWalletRecentPayouts(list);
       setWalletClaimedTotal(claimedTotal);
+
+      // Payments: total paid, currently betting, losses
+      const { data: userPayments } = await supabase
+        .from('payments')
+        .select('id, goal_list_id, amount')
+        .eq('user_id', userId)
+        .eq('status', 'succeeded');
+
+      if (!userPayments?.length) {
+        setWalletTotalPaid(0);
+        setWalletCurrentlyBetting(0);
+        setWalletLosses(0);
+        return;
+      }
+
+      const goalListIds = [...new Set(userPayments.map(p => p.goal_list_id))];
+      const { data: goalLists } = await supabase
+        .from('goal_lists')
+        .select('id, winner_id')
+        .in('id', goalListIds);
+
+      const listById = (goalLists || []).reduce((acc, g) => { acc[g.id] = g; return acc; }, {});
+      let totalPaid = 0;
+      let currentlyBetting = 0;
+      let losses = 0;
+
+      userPayments.forEach(p => {
+        const amount = parseFloat(p.amount || 0);
+        totalPaid += amount;
+        const list = listById[p.goal_list_id];
+        if (!list) return;
+        if (!list.winner_id) {
+          currentlyBetting += amount;
+        } else if (list.winner_id !== userId) {
+          losses += amount;
+        }
+      });
+
+      setWalletTotalPaid(totalPaid);
+      setWalletCurrentlyBetting(currentlyBetting);
+      setWalletLosses(losses);
     } catch (e) {
       console.error('Error loading wallet:', e);
     }
@@ -782,45 +834,49 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
 
-        {/* Wallet / Balance Section */}
+        {/* Wallet Section — simple list, no grey cards or icons */}
         <View style={styles.walletSection}>
-          <View style={styles.walletHeader}>
-            <Ionicons name="wallet" size={22} color="#4CAF50" />
-            <Text style={styles.walletTitle}>Wallet</Text>
-          </View>
-          <View style={styles.walletCards}>
-            <View style={styles.walletCard}>
-              <Text style={styles.walletLabel}>Available to claim</Text>
-              <Text style={styles.walletAmount}>${walletPendingTotal.toFixed(2)}</Text>
-              {walletPendingList.length > 0 && (
-                <View style={styles.walletPendingList}>
-                  {walletPendingList.map((g) => (
-                    <TouchableOpacity
-                      key={g.id}
-                      style={styles.walletPendingItem}
-                      onPress={() =>
-                        navigation.navigate('Payout', {
-                          goalListId: g.id,
-                          goalListName: g.name || 'Challenge',
-                          totalAmount: String(g.total_pot || 0),
-                        })
-                      }
-                    >
-                      <Text style={styles.walletPendingName} numberOfLines={1}>{g.name || 'Challenge'}</Text>
-                      <Text style={styles.walletPendingValue}>${parseFloat(g.prize_pool_amount || 0).toFixed(2)}</Text>
-                      <Ionicons name="chevron-forward" size={16} color="#4CAF50" />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-              {walletPendingTotal === 0 && (
-                <Text style={styles.walletSubtext}>Win a money challenge to see winnings here</Text>
-              )}
+          <Text style={styles.walletTitle}>Wallet</Text>
+          <View style={styles.walletRows}>
+            <View style={styles.walletRow}>
+              <Text style={styles.walletRowLabel}>Paid</Text>
+              <Text style={styles.walletRowValue}>${walletTotalPaid.toFixed(2)}</Text>
             </View>
-            <View style={styles.walletCard}>
-              <Text style={styles.walletLabel}>Total received</Text>
-              <Text style={styles.walletAmountSecondary}>${walletClaimedTotal.toFixed(2)}</Text>
-              <Text style={styles.walletSubtext}>All-time winnings paid out</Text>
+            <View style={styles.walletRow}>
+              <Text style={styles.walletRowLabel}>Currently betting</Text>
+              <Text style={styles.walletRowValue}>${walletCurrentlyBetting.toFixed(2)}</Text>
+            </View>
+            <View style={styles.walletRow}>
+              <Text style={styles.walletRowLabel}>Losses</Text>
+              <Text style={[styles.walletRowValue, walletLosses > 0 && styles.walletRowValueLoss]}>${walletLosses.toFixed(2)}</Text>
+            </View>
+            <View style={styles.walletRow}>
+              <Text style={styles.walletRowLabel}>Available to claim</Text>
+              <Text style={[styles.walletRowValue, walletPendingTotal > 0 && styles.walletRowValueGreen]}>${walletPendingTotal.toFixed(2)}</Text>
+            </View>
+            {walletPendingList.length > 0 && (
+              <View style={styles.walletPendingList}>
+                {walletPendingList.map((g) => (
+                  <TouchableOpacity
+                    key={g.id}
+                    style={styles.walletPendingItem}
+                    onPress={() =>
+                      navigation.navigate('Payout', {
+                        goalListId: g.id,
+                        goalListName: g.name || 'Challenge',
+                        totalAmount: String(g.total_pot || 0),
+                      })
+                    }
+                  >
+                    <Text style={styles.walletPendingName} numberOfLines={1}>{g.name || 'Challenge'}</Text>
+                    <Text style={styles.walletPendingValue}>${parseFloat(g.prize_pool_amount || 0).toFixed(2)}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <View style={styles.walletRow}>
+              <Text style={styles.walletRowLabel}>Total received</Text>
+              <Text style={styles.walletRowValue}>${walletClaimedTotal.toFixed(2)}</Text>
             </View>
           </View>
         </View>
@@ -1495,81 +1551,59 @@ const styles = StyleSheet.create({
   walletSection: {
     marginHorizontal: 20,
     marginBottom: 24,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-  },
-  walletHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
   },
   walletTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#ffffff',
+    marginBottom: 12,
   },
-  walletCards: {
-    gap: 12,
+  walletRows: {
+    gap: 8,
   },
-  walletCard: {
-    backgroundColor: '#0d0d0d',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
+  walletRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
   },
-  walletLabel: {
-    fontSize: 12,
-    color: '#888888',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 4,
+  walletRowLabel: {
+    fontSize: 15,
+    color: '#cccccc',
   },
-  walletAmount: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#4CAF50',
-  },
-  walletAmountSecondary: {
-    fontSize: 22,
-    fontWeight: '700',
+  walletRowValue: {
+    fontSize: 16,
+    fontWeight: '600',
     color: '#ffffff',
   },
-  walletSubtext: {
-    fontSize: 12,
-    color: '#666666',
-    marginTop: 4,
+  walletRowValueGreen: {
+    color: '#4CAF50',
+  },
+  walletRowValueLoss: {
+    color: '#f44336',
   },
   walletPendingList: {
-    marginTop: 10,
-    gap: 6,
+    marginTop: 4,
+    marginBottom: 4,
+    gap: 4,
+    paddingLeft: 12,
   },
   walletPendingItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#1a1a1a',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
+    paddingVertical: 6,
   },
   walletPendingName: {
     flex: 1,
     fontSize: 14,
-    color: '#ffffff',
+    color: '#888888',
     marginRight: 8,
   },
   walletPendingValue: {
     fontSize: 14,
     fontWeight: '600',
     color: '#4CAF50',
-    marginRight: 6,
   },
   section: {
     marginTop: 8,

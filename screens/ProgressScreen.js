@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, ScrollView, Dimensions, TouchableOpacity, Modal
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { useRealtime } from '../hooks/useRealtime';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -142,6 +143,16 @@ export default function ProgressScreen() {
         loadGoals();
       }
     }, [currentGoalList])
+  );
+
+  // Realtime: refetch when goals, lists, participants or completions change
+  useRealtime(
+    ['goal_lists', 'goals', 'group_goal_participants', 'goal_completions'],
+    async () => {
+      await loadGoals();
+      await loadGoalsForCurrentList();
+    },
+    'progress-screen'
   );
 
   // Load completion data when goals change or goal list changes
