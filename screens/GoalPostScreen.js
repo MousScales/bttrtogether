@@ -33,6 +33,11 @@ export default function GoalPostScreen({ route, navigation }) {
         return;
       }
 
+      if (!caption.trim() && media.length === 0) {
+        Alert.alert('Add something', 'Add a description or a photo to share your completion.');
+        return;
+      }
+
       // Get today's date in YYYY-MM-DD format
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -48,13 +53,35 @@ export default function GoalPostScreen({ route, navigation }) {
         throw goalError;
       }
 
-      // Save completion record for today
+      // Upload first image to storage and get public URL (if any)
+      let proofUrl = null;
+      if (media.length > 0) {
+        const firstAsset = media[0];
+        const uri = firstAsset.uri ?? firstAsset.localUri;
+        if (uri) {
+          const response = await fetch(uri);
+          const blob = await response.blob();
+          const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
+          const fileName = `${user.id}/${goal.id}_${todayStr}.${ext}`;
+          const { error: uploadError } = await supabase.storage
+            .from('goal-proofs')
+            .upload(fileName, blob, { cacheControl: '3600', upsert: true });
+          if (!uploadError) {
+            const { data: urlData } = supabase.storage.from('goal-proofs').getPublicUrl(fileName);
+            proofUrl = urlData.publicUrl;
+          }
+        }
+      }
+
+      // Save completion with description and proof image URL
       const { error: completionError } = await supabase
         .from('goal_completions')
         .upsert({
           goal_id: goal.id,
           user_id: user.id,
           completed_at: todayStr,
+          caption: caption.trim() || null,
+          proof_url: proofUrl,
         }, {
           onConflict: 'goal_id,completed_at'
         });
@@ -64,9 +91,7 @@ export default function GoalPostScreen({ route, navigation }) {
         // Don't throw - goal is already marked as completed
       }
 
-    // TODO: Upload media and save post to Supabase
-    console.log('Posting:', { goal: goal.title, caption, media });
-    navigation.goBack();
+      navigation.goBack();
     } catch (error) {
       Alert.alert('Error', error.message || 'Failed to save completion');
     }
@@ -83,11 +108,11 @@ export default function GoalPostScreen({ route, navigation }) {
         <TouchableOpacity 
           onPress={handlePost} 
           style={[styles.headerButton, styles.postButton]}
-          disabled={!caption && media.length === 0}
+          disabled={!caption.trim() && media.length === 0}
         >
           <Text style={[
             styles.postButtonText,
-            (!caption && media.length === 0) && styles.postButtonDisabled
+            (!caption.trim() && media.length === 0) && styles.postButtonDisabled
           ]}>Share</Text>
         </TouchableOpacity>
       </View>

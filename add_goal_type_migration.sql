@@ -13,3 +13,4 @@ WHERE goal_type IS NULL;
 ALTER TABLE public.goals 
 ALTER COLUMN goal_type SET NOT NULL;
 
+

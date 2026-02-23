@@ -95,7 +95,9 @@ export default function GoalsScreen({ navigation }) {
     React.useCallback(() => {
       loadGoals();
       if (currentGoalList) {
+        loadGoalsForCurrentList();
         checkOwnerPaymentStatus();
+        loadGroupGoals();
       }
     }, [currentGoalList])
   );
@@ -127,7 +129,7 @@ export default function GoalsScreen({ navigation }) {
   
   // Refresh payment status periodically for group goals
   useEffect(() => {
-    if (!currentGoalList || currentGoalList.type !== 'group' || currentGoalList.id === 'hardcoded-group-goal') {
+    if (!currentGoalList || currentGoalList.type !== 'group') {
       return;
     }
     
@@ -480,12 +482,6 @@ export default function GoalsScreen({ navigation }) {
         .single();
       setCurrentUserProfile(profile || null);
 
-      // Hard-coded group goal requires payment
-      if (currentGoalList.id === 'hardcoded-group-goal') {
-        setOwnerHasPaid(false);
-        return;
-      }
-
       // Check if owner has paid for group goals
       if (currentGoalList.type === 'group') {
         // Verify user has access to this goal list (either owner or participant)
@@ -689,13 +685,6 @@ export default function GoalsScreen({ navigation }) {
   const loadGroupGoals = async () => {
     if (!currentGoalList) return;
     
-    // Skip database queries for hardcoded goal
-    if (currentGoalList.id === 'hardcoded-group-goal') {
-      setGroupGoals([]);
-      setParticipantPersonalGoals({});
-      return;
-    }
-    
     try {
       // Load ALL group goals for this goal list (from any user, since they should all be the same)
       const { data: groupGoalsData, error } = await supabase
@@ -755,112 +744,6 @@ export default function GoalsScreen({ navigation }) {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (user && currentGoalList) {
-        // Handle hard-coded group goal
-        if (currentGoalList.id === 'hardcoded-group-goal') {
-          const hardCodedGoals = [
-            // Your own goal - not completed
-            { 
-              id: 'hardcoded-goal-own-1',
-              title: 'Read 30 pages',
-              checked: false, 
-              viewers: [],
-              type: 'goal', 
-              validated: 0,
-              totalViewers: 0,
-              completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-              color: '#2196F3',
-              goal_list_type: 'group',
-              created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-              currentDayIndex: 20,
-              hasProof: false,
-              isOwnGoal: true,
-              user_id: user.id,
-            },
-            // Other user's completed goal - Alex
-            { 
-              id: 'hardcoded-goal-other-1',
-              title: 'Morning workout',
-              checked: true, 
-              viewers: ['😎', '🤠', '🥳'],
-              type: 'goal', 
-              validated: 0,
-              totalViewers: 4,
-              completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-              color: '#4CAF50',
-              goal_list_type: 'group',
-              created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-              currentDayIndex: 20,
-              hasProof: true,
-              isOwnGoal: false,
-              user_id: 'other-user-1',
-              user_name: 'Alex',
-              user_avatar: '😎',
-              user_username: '@alex',
-              caption: 'Crushed my morning workout! 💪',
-            },
-            // Your own goal - completed
-            { 
-              id: 'hardcoded-goal-own-2',
-              title: 'Meditate 10 minutes',
-              checked: true,
-              viewers: [],
-              type: 'goal', 
-              validated: 0,
-              totalViewers: 0,
-              completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-              color: '#9C27B0',
-              goal_list_type: 'group',
-              created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-              currentDayIndex: 20,
-              hasProof: false,
-              isOwnGoal: true,
-              user_id: user.id,
-            },
-            // Other user's completed goal - Sam
-            { 
-              id: 'hardcoded-goal-other-2',
-              title: 'Drink 8 glasses',
-              checked: true,
-              viewers: ['🤓', '😊'],
-              type: 'goal', 
-              validated: 0,
-              totalViewers: 4,
-              completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-              color: '#FF9800',
-              goal_list_type: 'group',
-              created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-              currentDayIndex: 20,
-              hasProof: true,
-              isOwnGoal: false,
-              user_id: 'other-user-2',
-              user_name: 'Sam',
-              user_avatar: '🤠',
-              user_username: '@sam',
-              caption: 'Staying hydrated! 💧',
-            },
-            // Your own goal - completed with proof
-            { 
-              id: 'hardcoded-goal-own-3',
-              title: 'Cook healthy meal',
-              checked: true, 
-              viewers: [],
-              type: 'goal', 
-              validated: 0,
-              totalViewers: 0,
-              completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-              color: '#F44336',
-              goal_list_type: 'group',
-              created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-              currentDayIndex: 20,
-              hasProof: true,
-              isOwnGoal: true,
-              user_id: user.id,
-            },
-          ];
-          setGoals(hardCodedGoals);
-          return;
-        }
-        
         // Check if goal list is started (all participants have paid for group goals)
         // We determine this by checking if all participants have paid_status = 'paid'
         const isStarted = currentGoalList.type === 'group' && allParticipantsPaid;
@@ -907,7 +790,8 @@ export default function GoalsScreen({ navigation }) {
           if (userGoalsError) throw userGoalsError;
           data = userGoalsData || [];
         } else {
-          // For non-started or personal goals, only load current user's goals
+          // For non-started or personal goals, load current user's goals (both group and personal)
+          // This ensures the user can see their own group goals even before the goal list is started
           const { data: userGoalsData, error: userGoalsError } = await supabase
             .from('goals')
             .select('*')
@@ -915,7 +799,10 @@ export default function GoalsScreen({ navigation }) {
             .eq('goal_list_id', currentGoalList.id)
             .order('created_at', { ascending: true });
           
-          if (userGoalsError) throw userGoalsError;
+          if (userGoalsError) {
+            console.error('Error loading user goals:', userGoalsError);
+            throw userGoalsError;
+          }
           data = userGoalsData || [];
         }
 
@@ -1097,7 +984,7 @@ export default function GoalsScreen({ navigation }) {
           // Set today's completion status
           history[currentDayIndex] = isCompletedToday;
           
-          // Load profile for other users' goals
+          // Load profile for other users' goals, or for own goal when completed (for post display)
           let userProfile = null;
           if (!isOwnGoal) {
             const { data: profile } = await supabase
@@ -1106,11 +993,19 @@ export default function GoalsScreen({ navigation }) {
               .eq('id', goal.user_id)
               .single();
             userProfile = profile;
+          } else if (isCompletedToday && currentGoalList.type === 'group') {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('id, name, username, avatar_url')
+              .eq('id', user.id)
+              .single();
+            userProfile = profile;
           }
           
           // Check if there's a post (completion with proof) for today
           let hasProof = false;
           let caption = null;
+          let proofUrl = null;
           let completionId = null;
           let validatedCount = 0;
           let totalValidators = 0;
@@ -1119,29 +1014,33 @@ export default function GoalsScreen({ navigation }) {
           if (isCompletedToday) {
             const { data: todayCompletion } = await supabase
               .from('goal_completions')
-              .select('id, proof_url')
+              .select('id, proof_url, caption')
               .eq('goal_id', goal.id)
               .eq('user_id', goal.user_id)
               .eq('completed_at', todayStr)
               .single();
             
             hasProof = !!todayCompletion?.proof_url;
+            proofUrl = todayCompletion?.proof_url ?? null;
+            caption = todayCompletion?.caption ?? null;
             completionId = todayCompletion?.id;
             
             // Load validation count if completion exists
             if (completionId) {
-              // Count total validators (participants in the goal list)
+              // Total validators = everyone in the list EXCEPT the poster (they can't validate their own post)
               if (currentGoalList.type === 'group') {
                 const { data: participantsData } = await supabase
                   .from('group_goal_participants')
                   .select('user_id')
                   .eq('goal_list_id', currentGoalList.id);
                 
-                const participantIds = [
+                const allMemberIds = [
                   currentGoalList.user_id,
                   ...(participantsData || []).map(p => p.user_id)
                 ];
-                totalValidators = [...new Set(participantIds)].length;
+                const uniqueMembers = [...new Set(allMemberIds)];
+                // Exclude the poster (goal owner) from the validator count
+                totalValidators = Math.max(0, uniqueMembers.length - 1);
                 
                 // Count actual validations
                 const { data: validations } = await supabase
@@ -1157,7 +1056,6 @@ export default function GoalsScreen({ navigation }) {
                 }
               }
             }
-            // TODO: Load caption from posts table if you have one
           }
           
           return {
@@ -1183,6 +1081,7 @@ export default function GoalsScreen({ navigation }) {
             user_username: userProfile?.username || '@user',
             hasProof: hasProof,
             caption: caption,
+            proof_url: proofUrl,
           };
         }));
 
@@ -1198,10 +1097,8 @@ export default function GoalsScreen({ navigation }) {
         
         setGoals(sortedGoals);
         
-        // If goals exist and it's a group goal, mark as started
-        if (sortedGoals.length > 0 && currentGoalList.type === 'group' && !goalListStarted) {
-          setGoalListStarted(true);
-        }
+        // Do NOT auto-set goalListStarted when goals exist. The list only starts when
+        // everyone has paid/accepted and the owner taps "Begin".
       }
     } catch (error) {
       console.error('Error loading goals:', error);
@@ -1240,141 +1137,16 @@ export default function GoalsScreen({ navigation }) {
         const allLists = [...(ownedLists || []), ...participantGoalLists]
           .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-        // Add hard-coded group goal for testing
-        const hardCodedGroupGoal = {
-          id: 'hardcoded-group-goal',
-          name: 'Test Group Goal',
-          type: 'group',
-          user_id: user.id,
-          created_at: new Date().toISOString(),
-          payment_required: true,
-          amount: 10.00,
-          consequence_type: 'money',
-        };
-
-        // Combine hard-coded goal with loaded goals
-        const allGoalLists = [hardCodedGroupGoal, ...allLists];
-        setGoalLists(allGoalLists);
+        setGoalLists(allLists);
         
         // Set current goal list to the first one if not set
-        if (allGoalLists.length > 0 && !currentGoalList) {
-          setCurrentGoalList(allGoalLists[0]);
+        if (allLists.length > 0 && !currentGoalList) {
+          setCurrentGoalList(allLists[0]);
         }
 
         // Load goals for current goal list if one is selected
         if (currentGoalList) {
           const selectedList = currentGoalList;
-          
-          // Load hard-coded goals for test group goal
-          if (selectedList.id === 'hardcoded-group-goal') {
-            // Get current user to mark own goals
-            const { data: { user: currentUser } } = await supabase.auth.getUser();
-            
-            const hardCodedGoals = [
-              // Your own goal - not completed
-    { 
-                id: 'hardcoded-goal-own-1',
-                title: 'Read 30 pages',
-      checked: false, 
-                viewers: [],
-      type: 'goal', 
-                validated: 0,
-                totalViewers: 0,
-                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-                color: '#2196F3',
-                goal_list_type: 'group',
-                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-                currentDayIndex: 20,
-                hasProof: false,
-                isOwnGoal: true,
-                user_id: currentUser?.id || 'current-user',
-              },
-              // Other user's completed goal - Alex
-    { 
-                id: 'hardcoded-goal-other-1',
-                title: 'Morning workout',
-      checked: true, 
-                viewers: ['😎', '🤠', '🥳'],
-      type: 'goal', 
-                validated: 0,
-      totalViewers: 4,
-                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-                color: '#4CAF50',
-                goal_list_type: 'group',
-                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-                currentDayIndex: 20,
-                hasProof: true,
-                isOwnGoal: false,
-                user_id: 'other-user-1',
-                user_name: 'Alex',
-                user_avatar: '😎',
-                user_username: '@alex',
-                caption: 'Crushed my morning workout! 💪',
-              },
-              // Your own goal - completed
-    { 
-                id: 'hardcoded-goal-own-2',
-                title: 'Meditate 10 minutes',
-                checked: true,
-                viewers: [],
-      type: 'goal', 
-                validated: 0,
-                totalViewers: 0,
-                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-                color: '#9C27B0',
-                goal_list_type: 'group',
-                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-                currentDayIndex: 20,
-                hasProof: false,
-                isOwnGoal: true,
-                user_id: currentUser?.id || 'current-user',
-              },
-              // Other user's completed goal - Sam
-    { 
-                id: 'hardcoded-goal-other-2',
-                title: 'Drink 8 glasses',
-                checked: true,
-                viewers: ['🤓', '😊'],
-      type: 'goal', 
-                validated: 0,
-                totalViewers: 4,
-                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-                color: '#FF9800',
-                goal_list_type: 'group',
-                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-                currentDayIndex: 20,
-                hasProof: true,
-                isOwnGoal: false,
-                user_id: 'other-user-2',
-                user_name: 'Sam',
-                user_avatar: '🤠',
-                user_username: '@sam',
-                caption: 'Staying hydrated! 💧',
-              },
-              // Your own goal - completed with proof
-    { 
-                id: 'hardcoded-goal-own-3',
-                title: 'Cook healthy meal',
-      checked: true, 
-                viewers: [],
-      type: 'goal', 
-                validated: 0,
-                totalViewers: 0,
-                completionHistory: Array.from({ length: 28 }, (_, i) => i < 20 ? Math.random() > 0.3 : null),
-                color: '#F44336',
-                goal_list_type: 'group',
-                created_at: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
-                currentDayIndex: 20,
-                hasProof: true,
-                isOwnGoal: true,
-                user_id: currentUser?.id || 'current-user',
-              },
-            ];
-            setGoals(hardCodedGoals);
-            setOwnerHasPaid(false); // Hard-coded goal requires payment
-            setLoading(false);
-            return;
-          }
           
           // Check if owner has paid for group goals with payment required
           if (selectedList.type === 'group' && selectedList.payment_required) {
@@ -1586,6 +1358,11 @@ export default function GoalsScreen({ navigation }) {
   const toggleGoal = async (id) => {
     const goal = goals.find(g => g.id === id && g.type === 'goal');
     if (!goal) return;
+    
+    // Prevent toggling group goals that are already checked (waiting for validation or completed)
+    if (goal.checked && goal.goal_list_type === 'group') {
+      return;
+    }
 
     // Get current user
     const { data: { user } } = await supabase.auth.getUser();
@@ -1645,41 +1422,10 @@ export default function GoalsScreen({ navigation }) {
         }));
       }
     } else {
-      // For group goals, navigate to post screen if not checked
+      // For group goals, only navigate to post screen if not checked
+      // Once checked (waiting for validation or completed), cannot be unchecked
       if (!goal.checked) {
-      navigation.navigate('GoalPost', { goal });
-    } else {
-        // If already checked, toggle it off
-        const newChecked = false;
-        
-        const { error } = await supabase
-          .from('goals')
-          .update({ completed: newChecked })
-          .eq('id', id)
-          .eq('user_id', user.id);
-
-        if (!error) {
-          // Delete completion record for today
-          await supabase
-            .from('goal_completions')
-            .delete()
-            .eq('goal_id', id)
-            .eq('user_id', user.id)
-            .eq('completed_at', todayStr);
-
-      setGoals(goals.map(g => {
-        if (g.id === id) {
-          const updatedHistory = [...(g.completionHistory || [])];
-              updatedHistory[g.currentDayIndex] = newChecked;
-          return { 
-            ...g, 
-            checked: newChecked,
-            completionHistory: updatedHistory
-          };
-        }
-        return g;
-      }));
-    }
+        navigation.navigate('GoalPost', { goal });
       }
     }
   };
@@ -1690,14 +1436,8 @@ export default function GoalsScreen({ navigation }) {
   // Load friends/participants for group goals
   useEffect(() => {
     const loadFriends = async () => {
-      if (!currentGoalList || currentGoalList.id === 'hardcoded-group-goal') {
-        // Hard-coded friends for test goal
-        setFriends([
-          { id: '1', emoji: '😎', name: 'Alex', progress: 0.8 },
-          { id: '2', emoji: '🤠', name: 'Sam', progress: 0.6 },
-          { id: '3', emoji: '🥳', name: 'Jordan', progress: 0.9 },
-          { id: '4', emoji: '🤓', name: 'Taylor', progress: 0.7 },
-        ]);
+      if (!currentGoalList) {
+        setFriends([]);
         return;
       }
       
@@ -2018,7 +1758,7 @@ export default function GoalsScreen({ navigation }) {
         {/* Personal Goals */}
         <View style={styles.personalGoalsContainer}>
           {/* Show placeholder if no goals (but not for test group goal) */}
-          {goals.length === 0 && currentGoalList?.id !== 'hardcoded-group-goal' ? (
+          {goals.length === 0 ? (
             <View style={styles.placeholderContainer}>
               <TouchableOpacity onPress={() => navigation.navigate('CreateGoalList')}>
                 <Text style={styles.placeholderText}>START YOUR ADVENTURE</Text>
@@ -2033,7 +1773,7 @@ export default function GoalsScreen({ navigation }) {
               return (
                 <View key={item.id} style={[
                   styles.personalGoalItem,
-                  isOtherUserGoal && item.checked && item.hasProof && styles.otherUserPostItem
+                  ((isOtherUserGoal && item.checked && item.hasProof) || (item.isOwnGoal && item.checked && item.goal_list_type === 'group')) && styles.otherUserPostItem
                 ]}>
               {/* Goal Title and Complete Button - Only for own goals */}
               {!isOtherUserGoal && (
@@ -2054,8 +1794,12 @@ export default function GoalsScreen({ navigation }) {
                     </View>
                   </TouchableOpacity>
                     <TouchableOpacity 
-                      style={styles.statusContainer}
+                      style={[
+                        styles.statusContainer,
+                        item.checked && item.goal_list_type === 'group' && styles.statusContainerDisabled
+                      ]}
                       onPress={() => toggleGoal(item.id)}
+                      disabled={item.checked && item.goal_list_type === 'group'}
                     >
                       <Text style={[
                         styles.statusText,
@@ -2143,27 +1887,29 @@ export default function GoalsScreen({ navigation }) {
                 );
               })()}
                   
-              {/* Other User's Post - Image, Caption, Validate Section */}
-              {isOtherUserGoal && item.checked && item.hasProof && (
+              {/* Post block - same style as test group goal: other user's post OR own goal waiting for validation */}
+              {((isOtherUserGoal && item.checked && item.hasProof) || (item.isOwnGoal && item.checked && item.goal_list_type === 'group')) && (
                 <>
                   {/* Separator Line with spacing */}
                   <View style={styles.postSeparator} />
                   
-                  {/* Other User's Goal Header */}
+                  {/* Goal Post Header (user avatar, name, username) */}
                   <TouchableOpacity 
                     style={styles.otherUserHeader}
                     onPress={() => {
-                      // Navigate to user profile
-                      navigation.navigate('UserGoals', {
-                        user: {
-                          id: item.user_id,
-                          name: item.user_name,
-                          emoji: item.user_avatar,
-                          username: item.user_username,
-                          progress: 0.8,
-                        }
-                      });
+                      if (!item.isOwnGoal) {
+                        navigation.navigate('UserGoals', {
+                          user: {
+                            id: item.user_id,
+                            name: item.user_name,
+                            emoji: item.user_avatar,
+                            username: item.user_username,
+                            progress: 0.8,
+                          }
+                        });
+                      }
                     }}
+                    disabled={item.isOwnGoal}
                   >
                     <View style={styles.otherUserAvatar}>
                       <Text style={styles.otherUserAvatarEmoji}>{item.user_avatar || '👤'}</Text>
@@ -2177,14 +1923,19 @@ export default function GoalsScreen({ navigation }) {
                   {/* Goal Title - Under profile picture */}
                   <Text style={styles.otherUserGoalTitle}>{item.title}</Text>
                   
-                  {/* Caption */}
-                  {item.caption && (
+                  {/* Description / Caption */}
+                  {item.caption ? (
                     <Text style={styles.postCaption}>{item.caption}</Text>
-                  )}
+                  ) : null}
                   
-                  <View style={styles.imagePlaceholder}>
-                    <Ionicons name="image-outline" size={48} color="#666666" />
-                  </View>
+                  {/* Proof image or placeholder */}
+                  {item.proof_url ? (
+                    <Image source={{ uri: item.proof_url }} style={styles.postProofImage} />
+                  ) : (
+                    <View style={styles.imagePlaceholder}>
+                      <Ionicons name="image-outline" size={48} color="#666666" />
+                    </View>
+                  )}
                   
                   {/* Viewers and Validation - Inline */}
                   <View style={styles.viewersSection}>
@@ -2201,21 +1952,23 @@ export default function GoalsScreen({ navigation }) {
                         </View>
                       ))}
                     </View>
-                      <Text style={styles.validationCount}>
+                    <Text style={styles.validationCount}>
                       {item.validated || 0}/{item.totalViewers || 0} have validated
-                      </Text>
-                  <TouchableOpacity 
-                      style={styles.validateButtonTextOnly}
-                      onPress={() => toggleValidation(item.id)}
-                  >
-                    <Text style={[
-                        styles.validateButtonTextOnlyText,
-                        item.isValidated && styles.validateButtonTextOnlyTextActive
-                    ]}>
-                        {item.isValidated ? 'Validated' : 'Validate'}
                     </Text>
-                  </TouchableOpacity>
-                </View>
+                    {!item.isOwnGoal && (
+                      <TouchableOpacity 
+                        style={styles.validateButtonTextOnly}
+                        onPress={() => toggleValidation(item.id)}
+                      >
+                        <Text style={[
+                          styles.validateButtonTextOnlyText,
+                          item.isValidated && styles.validateButtonTextOnlyTextActive
+                        ]}>
+                          {item.isValidated ? 'Validated' : 'Validate'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 
                 </>
               )}
@@ -2442,7 +2195,7 @@ export default function GoalsScreen({ navigation }) {
       </Modal>
 
       {/* Payment Overlay - Outside ScrollView for proper positioning */}
-      {currentGoalList?.type === 'group' && currentGoalList?.id !== 'hardcoded-group-goal' && currentUser && !switchingGoal && (() => {
+      {currentGoalList?.type === 'group' && currentUser && !switchingGoal && (() => {
         // Only show overlay if participants are loaded for this goal list
         const participantsForThisList = participants.filter(p => p.goal_list_id === currentGoalList.id);
         if (participantsForThisList.length === 0 && participants.length > 0) {
@@ -2453,12 +2206,10 @@ export default function GoalsScreen({ navigation }) {
         const otherParticipants = participantsForThisList.filter(p => p.user_id !== currentUser?.id);
         const hasOtherParticipants = otherParticipants.length > 0;
         
-        // Don't show overlay if goal list has been started (either by state or if goals exist)
-        if (goalListStarted || goals.length > 0) return null;
+        // Show overlay until everyone has paid/accepted AND owner has tapped "Begin"
+        const showOverlay = !allParticipantsPaid || !hasOtherParticipants || !goalListStarted;
+        if (!showOverlay) return null;
         
-        const showOverlay = !allParticipantsPaid || !hasOtherParticipants;
-        
-        // Always show overlay if it's a group goal (either to pay/accept or to start)
         if (currentGoalList.type !== 'group') return null;
         
         // Get current user's participant data
@@ -2478,8 +2229,13 @@ export default function GoalsScreen({ navigation }) {
             {/* Blurred Background */}
             <View style={styles.paymentOverlayBackdrop} />
             
-            {/* Content directly on blurred background */}
-            <View style={styles.paymentOverlayContent}>
+            {/* Scrollable content */}
+            <ScrollView
+              style={styles.paymentOverlayContent}
+              contentContainerStyle={styles.paymentOverlayScrollContent}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+            >
               {/* Total Amount at Top - Only for money */}
               {currentGoalList.consequence_type === 'money' && (
                 <View style={styles.totalAmountContainer}>
@@ -2627,10 +2383,10 @@ export default function GoalsScreen({ navigation }) {
                   )}
                   
                   {/* Add User Section */}
-                  {!hasOtherParticipants && (
+                  {!goalListStarted && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
-                        Add at least one friend to start
+                        {hasOtherParticipants ? 'Invite more friends' : 'Add at least one friend to start'}
                       </Text>
                       
                       {/* Search Input */}
@@ -2875,10 +2631,10 @@ export default function GoalsScreen({ navigation }) {
                   )}
                   
                   {/* Add User Section */}
-                  {!hasOtherParticipants && (
+                  {!goalListStarted && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
-                        Add at least one friend to start
+                        {hasOtherParticipants ? 'Invite more friends' : 'Add at least one friend to start'}
                       </Text>
                       
                       {/* Search Input */}
@@ -3015,7 +2771,7 @@ export default function GoalsScreen({ navigation }) {
                 </>
               )}
               
-            </View>
+            </ScrollView>
           </View>
         );
       })()}
@@ -3356,6 +3112,14 @@ const styles = StyleSheet.create({
     borderColor: '#2a2a2a',
     marginTop: 12,
   },
+  postProofImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    backgroundColor: '#0a0a0a',
+    marginTop: 12,
+    resizeMode: 'cover',
+  },
   postInfo: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -3475,6 +3239,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 6,
     backgroundColor: '#1a1a1a',
+  },
+  statusContainerDisabled: {
+    opacity: 0.6,
   },
   statusText: {
     fontSize: 11,
@@ -3679,7 +3446,10 @@ const styles = StyleSheet.create({
     maxHeight: '90%',
     zIndex: 10000,
     elevation: 10000,
+  },
+  paymentOverlayScrollContent: {
     paddingHorizontal: 20,
+    paddingBottom: 40,
   },
   groupGoalsListContainer: {
     marginBottom: 24,

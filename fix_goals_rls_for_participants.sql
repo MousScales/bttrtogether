@@ -52,3 +52,4 @@ create policy "Users can view goals in their goal lists" on public.goals
 -- Policies Updated!
 -- ============================================
 
+
