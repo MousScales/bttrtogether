@@ -370,6 +370,46 @@ export default function GoalsScreen({ navigation }) {
     }
   };
 
+  const handleRemoveParticipant = async (participant) => {
+    if (!currentGoalList || !currentUser || currentGoalList.user_id !== currentUser.id || goalListStarted) return;
+    if (participant.user_id === currentUser.id) return; // don't remove self
+
+    const name = participant.profile?.name || 'This person';
+    Alert.alert(
+      'Remove from list',
+      `Remove ${name} from this goal list? They will need to be re-added to join again.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from('group_goal_participants')
+                .delete()
+                .eq('goal_list_id', currentGoalList.id)
+                .eq('user_id', participant.user_id);
+
+              if (error) {
+                console.error('Error removing participant:', error);
+                Alert.alert('Error', 'Could not remove them. Run fix_group_goal_participants_delete_rls.sql in Supabase (SQL Editor).');
+              } else {
+                await checkOwnerPaymentStatus();
+                await loadGroupGoals();
+                await loadGoalsForCurrentList();
+                Alert.alert('Removed', `${name} has been removed from the list.`);
+              }
+            } catch (e) {
+              console.error('Error removing participant:', e);
+              Alert.alert('Error', 'Something went wrong.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleAddFriendToGoal = async (friend) => {
     if (!currentGoalList || !currentUser) return;
 
@@ -756,10 +796,16 @@ export default function GoalsScreen({ navigation }) {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (user && currentGoalList) {
-        // Handle hard-coded group goal
-        // Check if goal list is started (all participants have paid for group goals)
-        // We determine this by checking if all participants have paid_status = 'paid'
-        const isStarted = currentGoalList.type === 'group' && allParticipantsPaid;
+        // For group lists, use DB started_at so we show all goals once owner has tapped Begin
+        let isStarted = false;
+        if (currentGoalList.type === 'group') {
+          const { data: listRow } = await supabase
+            .from('goal_lists')
+            .select('started_at')
+            .eq('id', currentGoalList.id)
+            .single();
+          isStarted = !!listRow?.started_at;
+        }
         
         let data;
         let allParticipantsGoals = [];
@@ -803,7 +849,7 @@ export default function GoalsScreen({ navigation }) {
           if (userGoalsError) throw userGoalsError;
           data = userGoalsData || [];
         } else {
-          // For non-started or personal goals, only load current user's goals
+          // For non-started or personal: load current user's goals
           const { data: userGoalsData, error: userGoalsError } = await supabase
             .from('goals')
             .select('*')
@@ -812,7 +858,55 @@ export default function GoalsScreen({ navigation }) {
             .order('created_at', { ascending: true });
           
           if (userGoalsError) throw userGoalsError;
-          data = userGoalsData || [];
+          const userGoals = userGoalsData || [];
+
+          // For group lists, show owner's group goals to participants so they see the challenge
+          const isParticipantOnGroupList = currentGoalList.type === 'group' && currentGoalList.user_id !== user.id;
+          if (isParticipantOnGroupList) {
+            // 1) Load owner's goals with goal_type = 'group'
+            const { data: ownerGroupGoalsData, error: ownerGoalsError } = await supabase
+              .from('goals')
+              .select('*')
+              .eq('goal_list_id', currentGoalList.id)
+              .eq('user_id', currentGoalList.user_id)
+              .eq('goal_type', 'group')
+              .order('created_at', { ascending: true });
+            if (ownerGoalsError) {
+              console.warn('Could not load owner group goals for participant:', ownerGoalsError.message);
+            }
+            let ownerGroupGoals = ownerGroupGoalsData || [];
+            // 2) Fallback: all group goals in this list (any user), dedupe by title
+            if (ownerGroupGoals.length === 0) {
+              const { data: allGroupGoalsData } = await supabase
+                .from('goals')
+                .select('*')
+                .eq('goal_list_id', currentGoalList.id)
+                .eq('goal_type', 'group')
+                .order('created_at', { ascending: true });
+              const allGroup = allGroupGoalsData || [];
+              const byTitle = new Map();
+              allGroup.forEach((g) => {
+                if (!byTitle.has(g.title)) byTitle.set(g.title, g);
+              });
+              ownerGroupGoals = Array.from(byTitle.values()).sort(
+                (a, b) => new Date(a.created_at) - new Date(b.created_at)
+              );
+            }
+            // 3) Fallback for old lists: owner's goals may have goal_type null/personal; load all owner's goals
+            if (ownerGroupGoals.length === 0) {
+              const { data: allOwnerGoalsData } = await supabase
+                .from('goals')
+                .select('*')
+                .eq('goal_list_id', currentGoalList.id)
+                .eq('user_id', currentGoalList.user_id)
+                .order('created_at', { ascending: true });
+              ownerGroupGoals = allOwnerGoalsData || [];
+            }
+            const participantPersonalGoals = userGoals.filter(g => g.goal_type === 'personal');
+            data = [...ownerGroupGoals, ...participantPersonalGoals];
+          } else {
+            data = userGoals;
+          }
         }
 
         // Get today's date string
@@ -2228,6 +2322,11 @@ export default function GoalsScreen({ navigation }) {
         
         if (currentGoalList.type !== 'group') return null;
         
+        // Owner: use currentGoalList.user_id, or creator row we inject (id starts with 'creator-')
+        const creatorParticipant = participantsForThisList.find(p => String(p.id || '').startsWith('creator-'));
+        const ownerId = currentGoalList.user_id ?? creatorParticipant?.user_id;
+        const isOwner = !!(ownerId && currentUser?.id && ownerId === currentUser.id);
+        
         // Get current user's participant data
         const currentUserParticipant = participantsForThisList.find(p => p.user_id === currentUser?.id);
         const amountPerPerson = parseFloat(currentGoalList.amount || 0);
@@ -2237,8 +2336,8 @@ export default function GoalsScreen({ navigation }) {
         // Use profile from participant if available, otherwise use fetched profile from Supabase
         const displayProfile = currentUserParticipant?.profile || currentUserProfile || {};
         
-        // Get creator ID
-        const creatorId = currentGoalList.user_id;
+        // Get creator ID (for display)
+        const creatorId = ownerId;
         
         return (
           <View style={styles.paymentOverlayContainer}>
@@ -2367,9 +2466,21 @@ export default function GoalsScreen({ navigation }) {
                                   </TouchableOpacity>
                                 )
                               ) : (
-                                <Text style={hasAccepted ? styles.youStatusBadgeTextPaid : styles.youStatusBadgeText}>
-                                  {hasAccepted ? 'Accepted' : 'Not Accepted'}
-                                </Text>
+                                <>
+                                  <Text style={hasAccepted ? styles.youStatusBadgeTextPaid : styles.youStatusBadgeText}>
+                                    {hasAccepted ? 'Accepted' : 'Not Accepted'}
+                                  </Text>
+                                  {!goalListStarted && isOwner && (
+                                    <TouchableOpacity
+                                      onPress={() => handleRemoveParticipant(participant)}
+                                      style={styles.removeParticipantButton}
+                                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                                      activeOpacity={0.7}
+                                    >
+                                      <Ionicons name="person-remove-outline" size={22} color="#f44336" />
+                                    </TouchableOpacity>
+                                  )}
+                                </>
                               )}
                             </View>
                           </View>
@@ -2385,7 +2496,7 @@ export default function GoalsScreen({ navigation }) {
                   {/* Start Button or Waiting Message - Show when all participants have paid */}
                   {allParticipantsPaid && hasOtherParticipants && (
                     <View style={styles.startButtonContainer}>
-                      {currentGoalList.user_id === currentUser?.id ? (
+                      {isOwner ? (
                         <TouchableOpacity 
                           style={styles.startButton}
                           onPress={handleStartGoalList}
@@ -2399,7 +2510,7 @@ export default function GoalsScreen({ navigation }) {
                   )}
                   
                   {/* Add User Section */}
-                  {!goalListStarted && currentGoalList.user_id === currentUser?.id && (
+                  {!goalListStarted && isOwner && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
                         Add at least one friend to start
@@ -2615,9 +2726,21 @@ export default function GoalsScreen({ navigation }) {
                                   </TouchableOpacity>
                                 )
                               ) : (
-                                <Text style={hasPaid ? styles.youStatusBadgeTextPaid : styles.youStatusBadgeText}>
-                                  {hasPaid ? 'Paid' : 'Not Paid'}
-                                </Text>
+                                <>
+                                  <Text style={hasPaid ? styles.youStatusBadgeTextPaid : styles.youStatusBadgeText}>
+                                    {hasPaid ? 'Paid' : 'Not Paid'}
+                                  </Text>
+                                  {!goalListStarted && isOwner && (
+                                    <TouchableOpacity
+                                      onPress={() => handleRemoveParticipant(participant)}
+                                      style={styles.removeParticipantButton}
+                                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                                      activeOpacity={0.7}
+                                    >
+                                      <Ionicons name="person-remove-outline" size={22} color="#f44336" />
+                                    </TouchableOpacity>
+                                  )}
+                                </>
                               )}
                             </View>
                           </View>
@@ -2633,7 +2756,7 @@ export default function GoalsScreen({ navigation }) {
                   {/* Start Button or Waiting Message - Show when all participants have paid */}
                   {allParticipantsPaid && hasOtherParticipants && (
                     <View style={styles.startButtonContainer}>
-                      {currentGoalList.user_id === currentUser?.id ? (
+                      {isOwner ? (
                         <TouchableOpacity 
                           style={styles.startButton}
                           onPress={handleStartGoalList}
@@ -2678,7 +2801,7 @@ export default function GoalsScreen({ navigation }) {
                   )}
 
                   {/* Add User Section */}
-                  {!goalListStarted && currentGoalList.user_id === currentUser?.id && (
+                  {!goalListStarted && isOwner && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
                         Add at least one friend to start
@@ -3663,6 +3786,12 @@ const styles = StyleSheet.create({
   },
   youStatusRight: {
     marginLeft: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  removeParticipantButton: {
+    marginLeft: 8,
+    padding: 4,
   },
   youStatusBadge: {
     // No background, border, or padding - just text
