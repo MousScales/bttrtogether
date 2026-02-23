@@ -1800,31 +1800,42 @@ export default function GoalsScreen({ navigation }) {
             /* Goals List */
             <>
               {goals.filter(item => item.type === 'goal').map((item) => {
-              const isOtherUserGoal = item.goal_list_type === 'group' && !item.isOwnGoal;
+              // isOtherUserGoal only applies to OTHER users' PERSONAL goals (posts to validate).
+              // Shared group goals (goal_type === 'group') are always shown to every participant.
+              const isSharedGroupGoal = item.goal_type === 'group';
+              const isOtherUserGoal = item.goal_list_type === 'group' && !item.isOwnGoal && !isSharedGroupGoal;
               
               return (
                 <View key={item.id} style={[
                   styles.personalGoalItem,
                   isOtherUserGoal && item.checked && (item.hasProof || item.caption) && styles.otherUserPostItem
                 ]}>
-              {/* Goal Title and Complete Button - Only for own goals */}
-              {!isOtherUserGoal && (
+              {/* Goal Title and Complete Button — own goals + shared group goals */}
+              {(!isOtherUserGoal) && (
                   <View style={styles.goalPillWrapper}>
-                  <TouchableOpacity 
-                    onPress={() => {
-                      setEditingGoalId(item.id);
-                      setNewGoalName(item.title);
-                      setEditGoalModalVisible(true);
-                    }}
-                    style={{ flex: 1 }}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' }}>
-                      <Text style={styles.goalTitleText}>{item.title.toUpperCase()}</Text>
-                      <Text style={styles.goalTypeLabel}>
-                        {' '}{item.goal_type === 'group' ? '- group goal' : '- personal goal'}
-                      </Text>
+                  {/* Title: editable only for own personal goals */}
+                  {item.isOwnGoal && !isSharedGroupGoal ? (
+                    <TouchableOpacity 
+                      onPress={() => {
+                        setEditingGoalId(item.id);
+                        setNewGoalName(item.title);
+                        setEditGoalModalVisible(true);
+                      }}
+                      style={{ flex: 1 }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                        <Text style={styles.goalTitleText}>{item.title.toUpperCase()}</Text>
+                        <Text style={styles.goalTypeLabel}>{' '}- personal goal</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                        <Text style={styles.goalTitleText}>{item.title.toUpperCase()}</Text>
+                        <Text style={styles.goalTypeLabel}>{' '}- group goal</Text>
+                      </View>
                     </View>
-                  </TouchableOpacity>
+                  )}
                     <TouchableOpacity 
                       style={styles.statusContainer}
                       onPress={() => toggleGoal(item.id)}
@@ -1845,7 +1856,7 @@ export default function GoalsScreen({ navigation }) {
                   </View>
               )}
                   
-              {/* Completion History - Only for own goals */}
+              {/* Completion History — own goals + shared group goals */}
               {!isOtherUserGoal && item.completionHistory && (() => {
                 const totalBoxes = item.completionHistory.length;
                 const numRows = 3; // Always 3 rows
