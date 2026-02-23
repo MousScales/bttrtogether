@@ -2442,7 +2442,7 @@ export default function GoalsScreen({ navigation }) {
                               return (
                                 <TouchableOpacity
                                   key={friend.id}
-                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  style={[styles.friendListItem, isAlreadyAdded && styles.friendItemAdded]}
                                   onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
                                   disabled={isAlreadyAdded}
                                 >
@@ -2491,7 +2491,7 @@ export default function GoalsScreen({ navigation }) {
                               return (
                                 <TouchableOpacity
                                   key={friend.id}
-                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  style={[styles.friendListItem, isAlreadyAdded && styles.friendItemAdded]}
                                   onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
                                   disabled={isAlreadyAdded}
                                 >
@@ -2721,7 +2721,7 @@ export default function GoalsScreen({ navigation }) {
                               return (
                                 <TouchableOpacity
                                   key={friend.id}
-                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  style={[styles.friendListItem, isAlreadyAdded && styles.friendItemAdded]}
                                   onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
                                   disabled={isAlreadyAdded}
                                 >
@@ -2770,7 +2770,7 @@ export default function GoalsScreen({ navigation }) {
                               return (
                                 <TouchableOpacity
                                   key={friend.id}
-                                  style={[styles.friendItem, isAlreadyAdded && styles.friendItemAdded]}
+                                  style={[styles.friendListItem, isAlreadyAdded && styles.friendItemAdded]}
                                   onPress={() => !isAlreadyAdded && handleAddFriendToGoal(friend)}
                                   disabled={isAlreadyAdded}
                                 >
@@ -3030,8 +3030,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
     marginBottom: 8,
-    overflow: 'hidden',
-    borderRadius: 32,
   },
   progressRing: {
     position: 'absolute',
@@ -3986,7 +3984,7 @@ const styles = StyleSheet.create({
     color: '#666666',
     fontSize: 14,
   },
-  friendItem: {
+  friendListItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
