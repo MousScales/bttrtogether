@@ -828,15 +828,11 @@ export default function GoalsScreen({ navigation }) {
       const { data: { user } } = await supabase.auth.getUser();
       
       if (user && list) {
-        // For group lists, use DB started_at so we show all goals once owner has tapped Begin
+        // Use started_at already on the list object — avoids an extra DB query that
+        // participants can't execute (goal_lists SELECT RLS only allows owners).
         let isStarted = false;
         if (list.type === 'group') {
-          const { data: listRow } = await supabase
-            .from('goal_lists')
-            .select('started_at')
-            .eq('id', list.id)
-            .single();
-          isStarted = !!listRow?.started_at;
+          isStarted = !!list.started_at;
         }
         
         let data;
