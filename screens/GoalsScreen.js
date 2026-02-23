@@ -2345,7 +2345,7 @@ export default function GoalsScreen({ navigation }) {
                                       }
                                     }}
                                   >
-                                    <Text style={styles.youStatusBadgeText}>
+                                    <Text style={styles.youStatusBadgeTextAction}>
                                       Continue
                                     </Text>
                                   </TouchableOpacity>
@@ -2383,7 +2383,7 @@ export default function GoalsScreen({ navigation }) {
                   )}
                   
                   {/* Add User Section */}
-                  {!goalListStarted && (
+                  {!goalListStarted && currentGoalList.user_id === currentUser?.id && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
                         {hasOtherParticipants ? 'Invite more friends' : 'Add at least one friend to start'}
@@ -2631,7 +2631,7 @@ export default function GoalsScreen({ navigation }) {
                   )}
                   
                   {/* Add User Section */}
-                  {!goalListStarted && (
+                  {!goalListStarted && currentGoalList.user_id === currentUser?.id && (
                     <View style={styles.addUserSection}>
                       <Text style={styles.addUserText}>
                         {hasOtherParticipants ? 'Invite more friends' : 'Add at least one friend to start'}
@@ -3449,6 +3449,7 @@ const styles = StyleSheet.create({
   },
   paymentOverlayScrollContent: {
     paddingHorizontal: 20,
+    paddingTop: 100,
     paddingBottom: 40,
   },
   groupGoalsListContainer: {
@@ -3624,6 +3625,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#ff4444',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  youStatusBadgeTextAction: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
