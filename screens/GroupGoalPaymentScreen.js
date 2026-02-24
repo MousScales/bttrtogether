@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
-import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
+import { getSupabaseFunctionsUrl, getSupabaseAnonKey, getStripePublishableKey } from '../lib/config';
 
 const superHandler = async (payload) => {
   const baseUrl = getSupabaseFunctionsUrl();
@@ -187,7 +187,9 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     if (fromBackend) {
       hint = '\n\nFix: Supabase → Edge Functions → Secrets → set STRIPE_SECRET_KEY to your live secret key (sk_live_...). Then run: npx supabase functions deploy super-handler';
     } else if (isKeyMismatch) {
-      hint = '\n\nUse the same Stripe account: .env EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY (pk_live_...) and Supabase STRIPE_SECRET_KEY (sk_live_...) must be from the same live Stripe account. Rebuild app after changing .env.';
+      const pk = getStripePublishableKey() || '';
+      const keyPreview = pk.length >= 12 ? pk.slice(0, 12) + '…' : (pk ? pk.slice(0, 8) + '…' : 'not set');
+      hint = '\n\n1) Stripe Dashboard → Developers → API keys: use the two LIVE keys from the same account.\n2) .env: EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_...\n3) Supabase → Edge Functions → Secrets: STRIPE_SECRET_KEY=sk_live_...\n4) Fully quit the app, run: npx expo start --clear then open the app again.\n\nApp key: ' + keyPreview;
     }
     Alert.alert(title, raw + hint);
   };

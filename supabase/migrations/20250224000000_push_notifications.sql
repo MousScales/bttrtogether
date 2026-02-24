@@ -123,11 +123,11 @@ BEGIN
 
   SELECT name INTO participant_name FROM public.profiles WHERE id = NEW.user_id;
 
-  -- Notify the new participant: "You were added to [list name]"
+  -- Notify the new participant: "You were added to [name]. Open the app to continue."
   PERFORM notify_push(
     NEW.user_id,
     'Added to Group Challenge',
-    COALESCE(list_name, 'A Group Challenge') || ' – you were added. Open the app to see goals.',
+    'You were added to "' || COALESCE(list_name, 'a group challenge') || '". Open the app to continue.',
     jsonb_build_object('type', 'added_to_list', 'goal_list_id', NEW.goal_list_id)
   );
 
@@ -276,8 +276,8 @@ BEGIN
   LOOP
     PERFORM notify_push(
       participant_user_id,
-      'Buy-in added',
-      COALESCE(payer_name, 'Someone') || ' added their buy-in to "' || COALESCE(list_name, 'the challenge') || '"',
+      'Buy-in paid',
+      COALESCE(payer_name, 'Someone') || ' paid their buy-in for "' || COALESCE(list_name, 'the challenge') || '"',
       jsonb_build_object('type', 'payment', 'goal_list_id', NEW.goal_list_id, 'user_id', NEW.user_id)
     );
   END LOOP;
@@ -285,8 +285,8 @@ BEGIN
   IF owner_id IS NOT NULL AND owner_id <> NEW.user_id THEN
     PERFORM notify_push(
       owner_id,
-      'Buy-in added',
-      COALESCE(payer_name, 'Someone') || ' added their buy-in to "' || COALESCE(list_name, 'your challenge') || '"',
+      'Buy-in paid',
+      COALESCE(payer_name, 'Someone') || ' paid their buy-in for "' || COALESCE(list_name, 'your challenge') || '"',
       jsonb_build_object('type', 'payment', 'goal_list_id', NEW.goal_list_id, 'user_id', NEW.user_id)
     );
   END IF;
