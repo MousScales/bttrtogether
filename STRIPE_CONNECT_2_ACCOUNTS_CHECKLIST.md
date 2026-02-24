@@ -1,3 +1,15 @@
+# Stripe: Connect (2 accounts) + Payment methods
+
+## Enable Apple Pay & Cash App for challenge payments
+
+The app already has Apple Pay and Cash App buttons on the challenge payment screen. To make them work:
+
+1. **Stripe Dashboard** → **Settings** → **Payment methods** (or **Payments** → **Payment methods**).
+2. Turn on **Apple Pay** and **Cash App Pay** if they’re not already on.
+3. The backend no longer pins a single payment method config, so your account’s enabled methods (card, Apple Pay, Cash App) are used for each PaymentIntent.
+
+---
+
 # What You Need to Make Connect Work With 2 Accounts
 
 You already have:

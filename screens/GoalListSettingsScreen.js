@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
+import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 
 export default function GoalListSettingsScreen({ navigation, route }) {
   const { goalListId, goalListName } = route.params || {};
@@ -25,6 +26,7 @@ export default function GoalListSettingsScreen({ navigation, route }) {
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [saving, setSaving] = useState(false);
   const [declaringWinner, setDeclaringWinner] = useState(null);
+  const [endingChallenge, setEndingChallenge] = useState(false);
 
   const isOwner = goalList && currentUser && goalList.user_id === currentUser.id;
 
@@ -265,6 +267,45 @@ export default function GoalListSettingsScreen({ navigation, route }) {
     }
   };
 
+  const endChallenge = async () => {
+    if (!isOwner || !goalList || !currentUser) return;
+    Alert.alert(
+      'End challenge',
+      'This will refund everyone and reset the challenge. No winner will be declared. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'End & refund everyone',
+          style: 'destructive',
+          onPress: async () => {
+            setEndingChallenge(true);
+            try {
+              const res = await fetch(`${getSupabaseFunctionsUrl()}/end-challenge`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'apikey': getSupabaseAnonKey(),
+                  'Authorization': `Bearer ${getSupabaseAnonKey()}`,
+                },
+                body: JSON.stringify({ goal_list_id: goalListId, user_id: currentUser.id }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+              Alert.alert('Done', 'Challenge ended. All money has been refunded to participants.', [
+                { text: 'OK', onPress: () => { loadData(); navigation.goBack(); } },
+              ]);
+            } catch (e) {
+              console.error(e);
+              Alert.alert('Error', e.message || 'Could not end challenge');
+            } finally {
+              setEndingChallenge(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const declareWinnerAutomatically = async () => {
     if (!isOwner || !goalList || goalList.winner_id || (goalList.tie_winner_ids && goalList.tie_winner_ids.length > 0)) return;
     setDeclaringWinner('auto');
@@ -401,6 +442,30 @@ export default function GoalListSettingsScreen({ navigation, route }) {
             </>
           )}
         </View>
+
+        {/* End challenge - owner only; refunds everyone and resets (hide if winner already paid out) */}
+        {isOwner && goalList.type === 'group' && goalList.payout_status !== 'completed' && (goalList.all_paid || (goalList.total_pot > 0 || goalList.prize_pool_amount > 0)) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>End challenge</Text>
+            <Text style={styles.hint}>
+              Refund all participants and reset the challenge. No winner is declared; everyone gets their money back.
+            </Text>
+            <TouchableOpacity
+              style={[styles.endChallengeButton]}
+              onPress={endChallenge}
+              disabled={endingChallenge}
+            >
+              {endingChallenge ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <>
+                  <Ionicons name="close-circle-outline" size={20} color="#ffffff" />
+                  <Text style={styles.endChallengeButtonText}>End challenge & refund everyone</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Declare winner - owner only, automatic only (most completed goals; ties split) */}
         {isOwner && goalList.type === 'group' && !goalList.winner_id && !(goalList.tie_winner_ids && goalList.tie_winner_ids.length > 0) && (
@@ -576,6 +641,21 @@ const styles = StyleSheet.create({
   },
   claimButton: {
     marginTop: 12,
+  },
+  endChallengeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#8B0000',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  endChallengeButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
   },
   goalRow: {
     flexDirection: 'row',

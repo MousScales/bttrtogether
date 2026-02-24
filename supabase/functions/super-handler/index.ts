@@ -57,13 +57,11 @@ serve(async (req) => {
     const platformFeeAmount = Math.round(amount * PLATFORM_FEE_PERCENT * 100) / 100; // dollars
     const prizePoolAmount    = Math.round((amount - platformFeeAmount) * 100) / 100;  // dollars
 
-    // Create PaymentIntent with specific payment configuration
-    // When using payment_method_configuration you must enable automatic_payment_methods
+    // Create PaymentIntent – card, Apple Pay, and Cash App (enabled in Stripe Dashboard)
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents
       currency: "usd",
       automatic_payment_methods: { enabled: true },
-      payment_method_configuration: 'pmc_1SzSj4RwOzsJN1cm5UV9euv1',
       metadata: {
         goal_list_id,
         user_id,
