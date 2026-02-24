@@ -278,6 +278,26 @@ serve(async (req) => {
       })
     }
 
+    // ------------------------------------------------------------------
+    // ACTION: create_login_link
+    // Generate a Stripe Express dashboard link so the user can manage
+    // their bank account / debit card / payout schedule.
+    // ------------------------------------------------------------------
+    if (action === "create_login_link") {
+      const { data: connectRecord } = await supabase
+        .from("stripe_connect_accounts")
+        .select("stripe_account_id")
+        .eq("user_id", user_id)
+        .maybeSingle()
+
+      if (!connectRecord?.stripe_account_id) {
+        return jsonResponse({ error: "No Stripe account found. Please complete setup first." }, 400)
+      }
+
+      const loginLink = await stripe.accounts.createLoginLink(connectRecord.stripe_account_id)
+      return jsonResponse({ url: loginLink.url })
+    }
+
     return jsonResponse({ error: `Unknown action: ${action}` }, 400)
 
   } catch (error) {

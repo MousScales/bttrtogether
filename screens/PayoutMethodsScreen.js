@@ -1,11 +1,16 @@
 /**
- * PayoutMethodsScreen
+ * PayoutMethodsScreen — Stripe Connect Express
  *
- * Settings → Payout methods: list saved banks and cards (up to 2 each),
- * add bank, add debit card. Used for choosing payout destination at claim time.
+ * Stripe handles EVERYTHING: bank account, debit card, KYC, identity.
+ * We never touch raw account numbers or card tokens.
+ *
+ * States:
+ *   not_set_up  → show "Set Up Payouts" button → Stripe Express onboarding
+ *   pending     → onboarding started but not complete → "Continue Setup"
+ *   ready       → payouts enabled → show connected info + "Manage in Stripe"
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -15,16 +20,15 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
+  Linking,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 import { useFocusEffect } from '@react-navigation/native';
 
+// ─── Edge-function helper ──────────────────────────────────────────────────
 async function callProcessPayout(payload) {
   const baseUrl = getSupabaseFunctionsUrl();
   if (!baseUrl || !baseUrl.startsWith('http')) {
@@ -44,146 +48,105 @@ async function callProcessPayout(payload) {
   return data;
 }
 
-async function callSuperHandler(payload) {
-  const baseUrl = getSupabaseFunctionsUrl();
-  if (!baseUrl || !baseUrl.startsWith('http')) {
-    throw new Error('Invalid Supabase URL');
-  }
-  const response = await fetch(`${baseUrl}/super-handler`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: getSupabaseAnonKey(),
-      Authorization: `Bearer ${getSupabaseAnonKey()}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data;
-}
-
+// ─── Component ─────────────────────────────────────────────────────────────
 export default function PayoutMethodsScreen({ navigation }) {
-  const { createToken, createPaymentMethod } = useStripe();
-  const [loading, setLoading] = useState(false);
-  const [methods, setMethods] = useState({ banks: [], cards: [] });
-  const [refreshing, setRefreshing] = useState(true);
-  const [showAddBank, setShowAddBank] = useState(false);
-  const [showAddCard, setShowAddCard] = useState(false);
-  const [accountHolderName, setAccountHolderName] = useState('');
-  const [routingNumber, setRoutingNumber] = useState('');
-  const [accountNumber, setAccountNumber] = useState('');
-  const [cardComplete, setCardComplete] = useState(false);
+  const [user, setUser]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [status, setStatus]     = useState(null); // null = loading
+  // status shape: { has_account, onboarding_completed, payouts_enabled,
+  //                 charges_enabled, stripe_account_id }
 
-  const loadMethods = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    setRefreshing(true);
+  const appStateRef       = useRef(AppState.currentState);
+  const waitingForStripe  = useRef(false);
+
+  // Re-check when user returns from Stripe browser
+  React.useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      if (wasBackground && nextState === 'active' && waitingForStripe.current) {
+        waitingForStripe.current = false;
+        loadStatus();
+      }
+      appStateRef.current = nextState;
+    });
+    return () => sub?.remove();
+  }, []);
+
+  const loadStatus = useCallback(async () => {
     try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser) return;
+      setUser(currentUser);
+
       const data = await callProcessPayout({
-        action: 'list_payout_methods',
-        user_id: user.id,
+        action:  'check_status',
+        user_id: currentUser.id,
       });
-      setMethods({ banks: data.banks || [], cards: data.cards || [] });
-    } catch (err) {
-      setMethods({ banks: [], cards: [] });
-    } finally {
-      setRefreshing(false);
+      setStatus(data);
+    } catch {
+      setStatus({ has_account: false });
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadMethods();
-    }, [loadMethods])
+      setStatus(null);
+      loadStatus();
+    }, [loadStatus])
   );
 
-  const canAddBank = methods.banks.length < 2;
-  const canAddCard = methods.cards.length < 2;
-
-  const handleAddBank = async () => {
-    const name = (accountHolderName || '').trim();
-    const routing = (routingNumber || '').replace(/\D/g, '');
-    const account = (accountNumber || '').replace(/\D/g, '');
-    if (!name) {
-      Alert.alert('Missing info', 'Please enter the name on your bank account.');
-      return;
-    }
-    if (routing.length !== 9) {
-      Alert.alert('Invalid routing number', 'Routing number must be 9 digits.');
-      return;
-    }
-    if (account.length < 4 || account.length > 17) {
-      Alert.alert('Invalid account number', 'Account number must be 4–17 digits.');
-      return;
-    }
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+  // Open Stripe-hosted onboarding (collects bank, card, ID — everything)
+  const handleSetup = async () => {
     setLoading(true);
     try {
-      await callProcessPayout({
-        action: 'add_bank',
-        user_id: user.id,
-        account_holder_name: name,
-        routing_number: routing,
-        account_number: account,
+      const data = await callProcessPayout({
+        action:     'create_account',
+        user_id:    user.id,
+        return_url: 'https://bttrtogetheraccount.app/payout-return',
       });
-      Alert.alert('Bank added', 'This account can be used for payouts (typically 2 business days).');
-      setShowAddBank(false);
-      setAccountHolderName('');
-      setRoutingNumber('');
-      setAccountNumber('');
-      loadMethods();
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Could not add bank account');
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const handleAddCard = async () => {
-    if (!cardComplete) {
-      Alert.alert('Complete card', 'Please enter a valid debit card.');
-      return;
-    }
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    setLoading(true);
-    try {
-      const [{ token }, { paymentMethod }] = await Promise.all([
-        createToken({ type: 'Card', currency: 'usd' }),
-        createPaymentMethod({ paymentMethodType: 'Card' }),
-      ]);
-      if (!token?.id) throw new Error('Could not create card token');
-      await callProcessPayout({
-        action: 'add_card',
-        user_id: user.id,
-        card_token: token.id,
-      });
-      if (paymentMethod?.id) {
-        try {
-          await callSuperHandler({
-            action: 'attach_payment_method',
-            user_id: user.id,
-            payment_method_id: paymentMethod.id,
-          });
-        } catch (e) {
-          console.warn('Attach payment method for in-app payments failed:', e);
-        }
+      if (data.already_completed) {
+        await loadStatus();
+        return;
       }
-      Alert.alert('Card added', 'Use this card for instant payouts and when paying for challenges.');
-      setShowAddCard(false);
-      setCardComplete(false);
-      loadMethods();
+
+      if (data.onboarding_url) {
+        waitingForStripe.current = true;
+        await Linking.openURL(data.onboarding_url);
+      }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not add card');
+      Alert.alert('Error', err.message || 'Could not start Stripe setup. Please try again.');
     } finally {
       setLoading(false);
     }
   };
+
+  // Open Stripe Express dashboard so the user can manage bank/card details
+  const handleManage = async () => {
+    setLoading(true);
+    try {
+      const data = await callProcessPayout({
+        action:  'create_login_link',
+        user_id: user.id,
+      });
+      if (data.url) {
+        await Linking.openURL(data.url);
+      }
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not open Stripe dashboard.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ─── Render ──────────────────────────────────────────────────────────────
+  const isReady   = status?.payouts_enabled;
+  const isPending = status?.has_account && !isReady;
+  const isNew     = status && !status.has_account;
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="chevron-back" size={28} color="#ffffff" />
@@ -192,160 +155,159 @@ export default function PayoutMethodsScreen({ navigation }) {
         <View style={styles.backButton} />
       </View>
 
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
-      >
-        <ScrollView
-          style={styles.content}
-          contentContainerStyle={styles.contentContainer}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={null}
-        >
-          <Text style={styles.subtitle}>
-            Add up to 2 bank accounts and 2 debit cards. Use them when you claim winnings and when paying for challenges. Cards support instant payouts.
-          </Text>
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
 
-          {refreshing ? (
-            <View style={styles.centered}>
-              <ActivityIndicator size="large" color="#4CAF50" />
+        {/* Hero */}
+        <View style={styles.heroRow}>
+          <Ionicons name="card-outline" size={32} color="#4CAF50" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.heroTitle}>How payouts work</Text>
+            <Text style={styles.heroSubtext}>
+              Connect your bank account or debit card through Stripe. When you win a challenge, your prize is transferred automatically — usually within 2 business days.
+            </Text>
+          </View>
+        </View>
+
+        {/* Loading */}
+        {status === null && (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color="#4CAF50" />
+            <Text style={styles.loadingText}>Checking your payout status…</Text>
+          </View>
+        )}
+
+        {/* ── NOT SET UP ── */}
+        {isNew && (
+          <View style={styles.card}>
+            <View style={styles.statusRow}>
+              <View style={[styles.dot, styles.dotGrey]} />
+              <Text style={styles.statusLabel}>No payout method connected</Text>
             </View>
-          ) : (
-            <>
-              {/* Banks */}
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Bank accounts</Text>
-                {methods.banks.length === 0 && !showAddBank && (
-                  <Text style={styles.emptyText}>No bank accounts added</Text>
-                )}
-                {methods.banks.map((b) => (
-                  <View key={b.id} style={styles.methodRow}>
-                    <Ionicons name="business-outline" size={22} color="#888888" />
-                    <Text style={styles.methodLabel}>•••• {b.last4}</Text>
-                    {b.default_for_currency && (
-                      <View style={styles.defaultBadge}>
-                        <Text style={styles.defaultBadgeText}>Default</Text>
-                      </View>
-                    )}
-                  </View>
-                ))}
-                {showAddBank && (
-                  <View style={styles.addForm}>
-                    <TextInput
-                      style={styles.input}
-                      value={accountHolderName}
-                      onChangeText={setAccountHolderName}
-                      placeholder="Name on account"
-                      placeholderTextColor="#666666"
-                      autoCapitalize="words"
-                    />
-                    <TextInput
-                      style={styles.input}
-                      value={routingNumber}
-                      onChangeText={(t) => setRoutingNumber(t.replace(/\D/g, '').slice(0, 9))}
-                      placeholder="Routing number (9 digits)"
-                      placeholderTextColor="#666666"
-                      keyboardType="number-pad"
-                    />
-                    <TextInput
-                      style={styles.input}
-                      value={accountNumber}
-                      onChangeText={(t) => setAccountNumber(t.replace(/\D/g, '').slice(0, 17))}
-                      placeholder="Account number"
-                      placeholderTextColor="#666666"
-                      keyboardType="number-pad"
-                    />
-                    <View style={styles.addFormButtons}>
-                      <TouchableOpacity style={styles.cancelButton} onPress={() => setShowAddBank(false)}>
-                        <Text style={styles.cancelButtonText}>Cancel</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
-                        onPress={handleAddBank}
-                        disabled={loading}
-                      >
-                        {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Add bank</Text>}
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-                {!showAddBank && canAddBank && (
-                  <TouchableOpacity style={styles.addLink} onPress={() => setShowAddBank(true)}>
-                    <Ionicons name="add-circle-outline" size={20} color="#4CAF50" />
-                    <Text style={styles.addLinkText}>Add bank account</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
 
-              {/* Cards */}
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Debit cards (instant payouts)</Text>
-                {methods.cards.length === 0 && !showAddCard && (
-                  <Text style={styles.emptyText}>No debit cards added</Text>
-                )}
-                {methods.cards.map((c) => (
-                  <View key={c.id} style={styles.methodRow}>
-                    <Ionicons name="card-outline" size={22} color="#888888" />
-                    <Text style={styles.methodLabel}>{c.brand} •••• {c.last4}</Text>
-                    {c.default_for_currency && (
-                      <View style={styles.defaultBadge}>
-                        <Text style={styles.defaultBadgeText}>Default</Text>
-                      </View>
-                    )}
-                  </View>
-                ))}
-                {showAddCard && (
-                  <View style={styles.addForm}>
-                    <View style={styles.cardFieldWrap}>
-                      <CardField
-                        postalCodeEnabled={false}
-                        placeholders={{ number: '4242 4242 4242 4242' }}
-                        cardStyle={{
-                          backgroundColor: '#1a1a1a',
-                          borderColor: '#2a2a2a',
-                          borderWidth: 1,
-                          textColor: '#ffffff',
-                          fontSize: 16,
-                        }}
-                        style={styles.cardField}
-                        onCardChange={(cardDetails) => setCardComplete(cardDetails.complete)}
-                      />
-                    </View>
-                    <View style={styles.addFormButtons}>
-                      <TouchableOpacity style={styles.cancelButton} onPress={() => setShowAddCard(false)}>
-                        <Text style={styles.cancelButtonText}>Cancel</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.primaryButton, (loading || !cardComplete) && styles.primaryButtonDisabled]}
-                        onPress={handleAddCard}
-                        disabled={loading || !cardComplete}
-                      >
-                        {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Add card</Text>}
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-                {!showAddCard && canAddCard && (
-                  <TouchableOpacity style={styles.addLink} onPress={() => setShowAddCard(true)}>
-                    <Ionicons name="add-circle-outline" size={20} color="#4CAF50" />
-                    <Text style={styles.addLinkText}>Add debit card</Text>
-                  </TouchableOpacity>
-                )}
+            <Text style={styles.cardBody}>
+              Stripe will guide you through adding your bank account or debit card.
+              They also handle identity verification — you'll only need to do this once.
+            </Text>
+
+            <View style={styles.featureList}>
+              {[
+                { icon: 'shield-checkmark-outline', text: 'Identity verification handled by Stripe' },
+                { icon: 'lock-closed-outline',       text: 'Your bank details are never stored by us' },
+                { icon: 'card-outline',              text: 'Connect a bank account or debit card' },
+                { icon: 'flash-outline',             text: 'Instant payouts available with debit cards' },
+              ].map(({ icon, text }) => (
+                <View key={text} style={styles.featureRow}>
+                  <Ionicons name={icon} size={18} color="#4CAF50" />
+                  <Text style={styles.featureText}>{text}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
+              onPress={handleSetup}
+              disabled={loading}
+            >
+              {loading
+                ? <ActivityIndicator size="small" color="#ffffff" />
+                : <>
+                    <Ionicons name="arrow-forward-circle-outline" size={20} color="#ffffff" />
+                    <Text style={styles.primaryButtonText}>Set Up Payouts with Stripe</Text>
+                  </>
+              }
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── PENDING (started but not complete) ── */}
+        {isPending && (
+          <View style={styles.card}>
+            <View style={styles.statusRow}>
+              <View style={[styles.dot, styles.dotYellow]} />
+              <Text style={styles.statusLabel}>Setup in progress</Text>
+            </View>
+
+            <Text style={styles.cardBody}>
+              Your Stripe account was created but setup isn't complete yet.
+              Tap the button below to finish — it only takes a couple of minutes.
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
+              onPress={handleSetup}
+              disabled={loading}
+            >
+              {loading
+                ? <ActivityIndicator size="small" color="#ffffff" />
+                : <>
+                    <Ionicons name="arrow-forward-circle-outline" size={20} color="#ffffff" />
+                    <Text style={styles.primaryButtonText}>Continue Stripe Setup</Text>
+                  </>
+              }
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.recheckButton} onPress={loadStatus} disabled={loading}>
+              <Ionicons name="refresh-outline" size={16} color="#888888" />
+              <Text style={styles.recheckText}>I finished — check again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── READY ── */}
+        {isReady && (
+          <>
+            <View style={[styles.card, styles.cardGreen]}>
+              <View style={styles.statusRow}>
+                <View style={[styles.dot, styles.dotGreen]} />
+                <Text style={[styles.statusLabel, { color: '#4CAF50' }]}>Payouts enabled ✓</Text>
               </View>
-            </>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+              <Text style={styles.cardBody}>
+                Your bank account is connected. When you win a challenge, your prize
+                will be transferred to your Stripe account and deposited to your bank
+                automatically.
+              </Text>
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Manage your account</Text>
+              <Text style={styles.cardBody}>
+                Add or change your bank account or debit card, update your payout schedule,
+                and view your balance — all inside your secure Stripe dashboard.
+              </Text>
+
+              <TouchableOpacity
+                style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
+                onPress={handleManage}
+                disabled={loading}
+              >
+                {loading
+                  ? <ActivityIndicator size="small" color="#ffffff" />
+                  : <>
+                      <Ionicons name="open-outline" size={20} color="#ffffff" />
+                      <Text style={styles.primaryButtonText}>Manage in Stripe</Text>
+                    </>
+                }
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.recheckButton} onPress={loadStatus} disabled={loading}>
+                <Ionicons name="refresh-outline" size={16} color="#888888" />
+                <Text style={styles.recheckText}>Refresh status</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
+        {/* Stripe branding note */}
+        <Text style={styles.poweredBy}>Payouts powered by Stripe</Text>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
+// ─── Styles ────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
+  container: { flex: 1, backgroundColor: '#000000' },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -356,136 +318,77 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1a1a1a',
   },
-  backButton: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  content: {
-    flex: 1,
-  },
-  contentContainer: {
-    padding: 20,
-    paddingBottom: 40,
-  },
-  centered: {
-    paddingVertical: 40,
-    alignItems: 'center',
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#888888',
-    marginBottom: 24,
-    lineHeight: 20,
-  },
-  section: {
-    marginBottom: 28,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
-    marginBottom: 12,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: '#666666',
-    marginBottom: 8,
-  },
-  methodRow: {
+  backButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerTitle: { fontSize: 18, fontWeight: '600', color: '#ffffff' },
+
+  content: { flex: 1 },
+  contentContainer: { padding: 20, paddingBottom: 48, gap: 16 },
+
+  heroRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
-    marginBottom: 8,
-    gap: 10,
-  },
-  methodLabel: {
-    flex: 1,
-    fontSize: 15,
-    color: '#ffffff',
-  },
-  defaultBadge: {
-    backgroundColor: '#1a2a1a',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  defaultBadgeText: {
-    fontSize: 11,
-    color: '#4CAF50',
-    fontWeight: '600',
-  },
-  addForm: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 12,
+    alignItems: 'flex-start',
+    gap: 14,
+    backgroundColor: '#0d1a0d',
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1a3a1a',
   },
-  input: {
-    backgroundColor: '#0d0d0d',
+  heroTitle:   { fontSize: 15, fontWeight: '700', color: '#ffffff', marginBottom: 4 },
+  heroSubtext: { fontSize: 13, color: '#888888', lineHeight: 18 },
+
+  centered: { alignItems: 'center', paddingVertical: 40, gap: 12 },
+  loadingText: { fontSize: 14, color: '#888888' },
+
+  card: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 16,
+    padding: 20,
     borderWidth: 1,
     borderColor: '#2a2a2a',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#ffffff',
-    marginBottom: 12,
+    gap: 14,
   },
-  cardFieldWrap: {
-    marginBottom: 12,
-  },
-  cardField: {
-    width: '100%',
-    height: 50,
-  },
-  addFormButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 4,
-  },
-  cancelButton: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    color: '#888888',
-  },
+  cardGreen: { borderColor: '#2a4a2a', backgroundColor: '#0d1a0d' },
+
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  dot:        { width: 10, height: 10, borderRadius: 5 },
+  dotGrey:    { backgroundColor: '#555555' },
+  dotYellow:  { backgroundColor: '#f5a623' },
+  dotGreen:   { backgroundColor: '#4CAF50' },
+  statusLabel: { fontSize: 14, fontWeight: '600', color: '#ffffff' },
+
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
+  cardBody:     { fontSize: 14, color: '#888888', lineHeight: 20 },
+
+  featureList: { gap: 10 },
+  featureRow:  { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  featureText: { fontSize: 14, color: '#cccccc', flex: 1 },
+
   primaryButton: {
-    flex: 1,
-    backgroundColor: '#4CAF50',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  primaryButtonDisabled: {
-    opacity: 0.5,
-  },
-  primaryButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  addLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4CAF50',
+    paddingVertical: 14,
+    borderRadius: 12,
     gap: 8,
-    paddingVertical: 10,
   },
-  addLinkText: {
-    fontSize: 15,
-    color: '#4CAF50',
-    fontWeight: '500',
+  primaryButtonDisabled: { opacity: 0.5 },
+  primaryButtonText: { fontSize: 16, fontWeight: '700', color: '#ffffff' },
+
+  recheckButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+  },
+  recheckText: { fontSize: 13, color: '#888888' },
+
+  poweredBy: {
+    fontSize: 12,
+    color: '#444444',
+    textAlign: 'center',
+    marginTop: 8,
   },
 });
