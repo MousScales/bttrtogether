@@ -24,6 +24,7 @@ import GroupGoalPaymentScreen from './screens/GroupGoalPaymentScreen';
 import PayoutScreen from './screens/PayoutScreen';
 import AddGoalsScreen from './screens/AddGoalsScreen';
 import GoalListSettingsScreen from './screens/GoalListSettingsScreen';
+import PayoutMethodsScreen from './screens/PayoutMethodsScreen';
 import MoneyScreen from './screens/MoneyScreen';
 import JoinChallengeScreen from './screens/JoinChallengeScreen';
 import AddMeScreen from './screens/AddMeScreen';
@@ -96,6 +97,7 @@ function ProfileStack() {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="ProfileHome" component={ProfileScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="PayoutMethods" component={PayoutMethodsScreen} />
       <Stack.Screen 
         name="Payout" 
         component={PayoutScreen}
@@ -291,6 +293,7 @@ export default function App() {
   const [hasGoals, setHasGoals] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
   const navigationRef = useRef(null);
+  const pendingDeepLinkRef = useRef(null);
 
   usePushNotifications(!!session);
 
@@ -322,9 +325,23 @@ export default function App() {
     }
   }, [session, hasProfile, hasGoals]);
 
-  // Handle deep links: bttrtogether://join/GOAL_LIST_ID and bttrtogether://add-me/USER_ID
+  // Capture join/add-me links even before session is ready (so we can open after login)
   useEffect(() => {
-    if (!session || !hasProfile || !hasGoals) return;
+    const captureOrHandle = (url) => {
+      if (!url || typeof url !== 'string') return;
+      const clean = url.split('?')[0].trim();
+      if (clean.startsWith(JOIN_LINK_PREFIX) || clean.startsWith(ADD_ME_LINK_PREFIX)) {
+        pendingDeepLinkRef.current = clean;
+      }
+    };
+    Linking.getInitialURL().then(captureOrHandle);
+    const sub = Linking.addEventListener('url', ({ url }) => captureOrHandle(url));
+    return () => sub.remove();
+  }, []);
+
+  // Handle deep links when app is ready: bttrtogether://join/GOAL_LIST_ID and bttrtogether://add-me/USER_ID
+  useEffect(() => {
+    if (!session || !hasProfile) return;
 
     const handleUrl = (url) => {
       if (!url || typeof url !== 'string') return;
@@ -350,12 +367,23 @@ export default function App() {
       }
     };
 
+    // Process any pending link stored before login
+    const pending = pendingDeepLinkRef.current;
+    if (pending) {
+      pendingDeepLinkRef.current = null;
+      const ready = () => {
+        if (navigationRef.current?.isReady()) handleUrl(pending);
+        else setTimeout(ready, 100);
+      };
+      ready();
+    }
+
     Linking.getInitialURL().then((url) => {
       if (url) handleUrl(url);
     });
     const sub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
     return () => sub.remove();
-  }, [session, hasProfile, hasGoals]);
+  }, [session, hasProfile]);
 
   const checkProfileAndGoals = async (session) => {
     if (session) {
@@ -413,7 +441,19 @@ export default function App() {
           ) : !hasProfile ? (
             <RootStack.Screen name="Onboarding" component={OnboardingScreen} />
           ) : !hasGoals ? (
-            <RootStack.Screen name="CreateGoalList" component={CreateGoalListScreen} />
+            <>
+              <RootStack.Screen name="CreateGoalList" component={CreateGoalListScreen} />
+              <RootStack.Screen
+                name="JoinChallenge"
+                component={JoinChallengeScreen}
+                options={{ presentation: 'modal' }}
+              />
+              <RootStack.Screen
+                name="AddMe"
+                component={AddMeScreen}
+                options={{ presentation: 'modal' }}
+              />
+            </>
           ) : (
             <>
               <RootStack.Screen name="MainApp" component={MainTabs} />
