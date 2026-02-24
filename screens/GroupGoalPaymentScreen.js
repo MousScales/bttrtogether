@@ -15,15 +15,49 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
 import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 
+const superHandler = async (payload) => {
+  const baseUrl = getSupabaseFunctionsUrl();
+  const response = await fetch(`${baseUrl}/super-handler`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: getSupabaseAnonKey(),
+      Authorization: `Bearer ${getSupabaseAnonKey()}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || data.message || `HTTP ${response.status}`);
+  return data;
+};
+
 export default function GroupGoalPaymentScreen({ navigation, route }) {
   const { goalListId, amount, goalListName } = route.params;
-  const { confirmPayment, confirmPlatformPayPayment } = useStripe();
+  const { confirmPayment, confirmPlatformPayPayment, isPlatformPaySupported } = useStripe();
   const [loading, setLoading] = useState(false);
   const [clientSecret, setClientSecret] = useState(null);
   const [paymentIntentId, setPaymentIntentId] = useState(null);
-  const [selectedMethod, setSelectedMethod] = useState(null); // 'card', 'apple', 'cashapp'
+  const [savedPaymentMethods, setSavedPaymentMethods] = useState([]);
+  const [stripeCustomerId, setStripeCustomerId] = useState(null);
+  const [selectedMethod, setSelectedMethod] = useState(null); // 'saved_0', 'apple', 'cashapp', 'card'
   const [cardComplete, setCardComplete] = useState(false);
+  const [applePaySupported, setApplePaySupported] = useState(false);
   const applePayInProgress = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (typeof isPlatformPaySupported === 'function') {
+          const supported = await isPlatformPaySupported({ applePay: true });
+          if (!cancelled) setApplePaySupported(!!supported);
+        }
+      } catch (_) {
+        if (!cancelled) setApplePaySupported(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isPlatformPaySupported]);
 
   useEffect(() => {
     createPaymentIntent();
@@ -39,33 +73,23 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
         return;
       }
 
-      const response = await fetch(`${getSupabaseFunctionsUrl()}/super-handler`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': getSupabaseAnonKey(),
-            'Authorization': `Bearer ${getSupabaseAnonKey()}`,
-          },
-          body: JSON.stringify({
-            goal_list_id: goalListId,
-            amount: parseFloat(amount),
-            user_id: user.id,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch {
-          errorData = { error: errorText || `HTTP ${response.status}` };
-        }
-        throw new Error(errorData.error || errorData.message || `HTTP ${response.status}`);
+      let customerId = null;
+      try {
+        const listData = await superHandler({ action: 'list_payment_methods', user_id: user.id });
+        setSavedPaymentMethods(listData.payment_methods || []);
+        setStripeCustomerId(listData.stripe_customer_id || null);
+        customerId = listData.stripe_customer_id;
+      } catch (e) {
+        console.warn('List payment methods failed:', e);
       }
 
-      const data = await response.json();
+      const data = await superHandler({
+        goal_list_id: goalListId,
+        amount: parseFloat(amount),
+        user_id: user.id,
+        stripe_customer_id: customerId || undefined,
+      });
+
       if (data.error || !data.clientSecret) {
         throw new Error(data.error || 'Failed to create payment intent');
       }
@@ -156,11 +180,45 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
   };
 
   const showPaymentError = (title, message) => {
-    const isKeyMismatch = /no such payment_intent|No such payment_intent/i.test(message || '');
-    const hint = isKeyMismatch
-      ? '\n\nYour app and Supabase must use the SAME Stripe account. In Supabase Dashboard → Project Settings → Edge Functions → Secrets, set STRIPE_SECRET_KEY to the secret key (sk_test_... or sk_live_...) from the same Stripe account as EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY in your .env. Then run: supabase functions deploy super-handler\n\nSee STRIPE_KEYS_FIX.md in the project.'
-      : '';
-    Alert.alert(title, (message || 'Unknown error') + hint);
+    const raw = message || 'Unknown error';
+    const fromBackend = /Stripe is not configured|STRIPE_SECRET_KEY|not configured/i.test(raw);
+    const isKeyMismatch = !fromBackend && /no such payment_intent|No such payment_intent/i.test(raw);
+    let hint = '';
+    if (fromBackend) {
+      hint = '\n\nFix: Supabase → Edge Functions → Secrets → set STRIPE_SECRET_KEY to your live secret key (sk_live_...). Then run: npx supabase functions deploy super-handler';
+    } else if (isKeyMismatch) {
+      hint = '\n\nUse the same Stripe account: .env EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY (pk_live_...) and Supabase STRIPE_SECRET_KEY (sk_live_...) must be from the same live Stripe account. Rebuild app after changing .env.';
+    }
+    Alert.alert(title, raw + hint);
+  };
+
+  const handleSavedCardPayment = async (paymentMethodId) => {
+    if (!clientSecret) {
+      Alert.alert('Error', 'Payment not ready');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error, paymentIntent } = await confirmPayment(clientSecret, {
+        paymentMethodType: 'Card',
+        paymentMethodId,
+      });
+      if (error) {
+        if (error.code !== 'Canceled') showPaymentError('Payment Failed', error.message);
+        setLoading(false);
+        return;
+      }
+      if (paymentIntent?.status === 'Succeeded') {
+        await processPaymentSuccess();
+      } else {
+        showPaymentError('Payment', paymentIntent?.status ? `Unexpected status: ${paymentIntent.status}` : 'Payment did not complete.');
+      }
+    } catch (error) {
+      console.error('Error processing saved card payment:', error);
+      showPaymentError('Error', error?.message || 'Failed to process payment');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCardPayment = async () => {
@@ -276,9 +334,10 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     setLoading(true);
     console.log('[Cash App] Confirming payment...');
     try {
-      // Cash App requires return_url. StripeProvider must have urlScheme="bttrtogether" so native SDK sets bttrtogether://safepay.
+      // Cash App needs return_url for redirect; urlScheme in StripeProvider is bttrtogether so use bttrtogether://safepay
       const { error, paymentIntent } = await confirmPayment(clientSecret, {
         paymentMethodType: 'CashApp',
+        returnURL: 'bttrtogether://safepay',
       });
 
       if (error) {
@@ -332,6 +391,31 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
           <>
             <Text style={styles.sectionTitle}>Choose Payment Method</Text>
 
+            {/* Saved cards (from Settings / Payout methods) */}
+            {savedPaymentMethods.length > 0 && (
+              <>
+                <Text style={styles.savedCardsLabel}>Saved cards</Text>
+                {savedPaymentMethods.map((pm, idx) => (
+                  <TouchableOpacity
+                    key={pm.id}
+                    style={[
+                      styles.paymentMethodButton,
+                      selectedMethod === `saved_${idx}` && styles.paymentMethodButtonSelected,
+                    ]}
+                    onPress={() => setSelectedMethod(`saved_${idx}`)}
+                  >
+                    <View style={styles.paymentMethodContent}>
+                      <Ionicons name="card" size={24} color="#ffffff" />
+                      <Text style={styles.paymentMethodText}>{pm.brand} •••• {pm.last4}</Text>
+                    </View>
+                    {selectedMethod === `saved_${idx}` && (
+                      <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </>
+            )}
+
             {/* Apple Pay - Show on all iOS devices */}
             {Platform.OS === 'ios' && (
               <TouchableOpacity
@@ -372,7 +456,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
               )}
             </TouchableOpacity>
 
-            {/* Card Payment Option */}
+            {/* New card */}
             <TouchableOpacity
               style={[
                 styles.paymentMethodButton,
@@ -381,8 +465,8 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
               onPress={() => setSelectedMethod('card')}
             >
               <View style={styles.paymentMethodContent}>
-                <Ionicons name="card" size={24} color="#ffffff" />
-                <Text style={styles.paymentMethodText}>Credit or Debit Card</Text>
+                <Ionicons name="card-outline" size={24} color="#ffffff" />
+                <Text style={styles.paymentMethodText}>New card</Text>
               </View>
               {selectedMethod === 'card' && (
                 <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
@@ -419,6 +503,10 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
                 onPress={() => {
                   if (selectedMethod === 'card') {
                     handleCardPayment();
+                  } else if (typeof selectedMethod === 'string' && selectedMethod.startsWith('saved_')) {
+                    const idx = parseInt(selectedMethod.replace('saved_', ''), 10);
+                    const pm = savedPaymentMethods[idx];
+                    if (pm?.id) handleSavedCardPayment(pm.id);
                   } else if (selectedMethod === 'apple') {
                     handleApplePay();
                   } else if (selectedMethod === 'cashapp') {
@@ -514,6 +602,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#ffffff',
     marginBottom: 16,
+  },
+  savedCardsLabel: {
+    fontSize: 14,
+    color: '#888888',
+    marginBottom: 8,
+    marginTop: 4,
   },
   paymentMethodButton: {
     flexDirection: 'row',

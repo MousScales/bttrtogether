@@ -55,6 +55,12 @@ That migration includes:
 - `public.reminder_sent` for stake-reminder throttling
 - Helper `notify_push(user_id, title, body, data)` and triggers for: friend request accepted, added to group, new post in list, validation, payment, all paid, winner declared
 
+- **`profiles.notifications_enabled`**  
+  The push Edge Function skips sending when `notifications_enabled = false`. If your `profiles` table doesn’t have this column yet, add it (e.g. run `profiles_enhancements.sql` or in SQL Editor):
+  ```sql
+  ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS notifications_enabled boolean DEFAULT true;
+  ```
+
 ---
 
 ## 4. Supabase: Edge Function “push”
@@ -162,3 +168,25 @@ You can do this from:
 **Implemented triggers (notifications sent automatically):**  
 Friend request accepted, added to group list, someone joined list, new post in group list, post validated, payment made, all paid, winner/loser declared.  
 **Scheduled (via send-reminders):** Day almost over, stake reminder every 2 days.
+
+---
+
+## Troubleshooting (notifications not working)
+
+1. **Database webhook**  
+   In Supabase Dashboard → Database → Webhooks, confirm there is a webhook on table `notifications`, event **Insert**, pointing to `https://<project-ref>.supabase.co/functions/v1/push` with **POST** and a header that sends your **service role** key (e.g. `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>`). Without this, the push function is never called.
+
+2. **Push function deployed**  
+   Run `supabase functions deploy push` and ensure the project is linked. Test by inserting a row into `notifications` and checking **Supabase Dashboard → Edge Functions → push → Logs**.
+
+3. **Token and permission**  
+   - Push works only on a **physical device**, not the simulator.  
+   - User must **allow notifications** when the app prompts.  
+   - In the app **Settings**, notifications must be **on** (the app only saves `expo_push_token` when `notifications_enabled` is true).  
+   - In Supabase **Table Editor → profiles**, open your user row and confirm `expo_push_token` is set (starts with `ExponentPushToken[...]`). If it’s null, the device never registered or Settings has notifications off.
+
+4. **`notifications_enabled`**  
+   If the column is missing or false, the push function skips sending. Ensure the column exists and is `true` for test users (or turn notifications on in app Settings).
+
+5. **Expo projectId**  
+   The app uses `Constants.expoConfig?.extra?.eas?.projectId` (from `app.config.js`). If that’s missing, `getExpoPushTokenAsync` fails and no token is saved. Ensure `extra.eas.projectId` is set in `app.config.js`.

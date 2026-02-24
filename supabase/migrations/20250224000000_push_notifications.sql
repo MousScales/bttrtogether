@@ -3,9 +3,11 @@
 -- Run this in Supabase SQL Editor (or via supabase db push)
 -- ============================================
 
--- 1. Add expo push token to profiles
+-- 1. Add expo push token and notifications_enabled to profiles
 ALTER TABLE public.profiles
 ADD COLUMN IF NOT EXISTS expo_push_token text;
+ALTER TABLE public.profiles
+ADD COLUMN IF NOT EXISTS notifications_enabled boolean DEFAULT true;
 
 -- 2. Notifications table (webhook inserts here; Edge Function sends via Expo)
 CREATE TABLE IF NOT EXISTS public.notifications (

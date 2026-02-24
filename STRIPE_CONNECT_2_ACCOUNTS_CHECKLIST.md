@@ -1,5 +1,20 @@
 # Stripe: Connect (2 accounts) + Payment methods
 
+## Are payouts on live? Yes.
+
+Winner payouts use the **same live Stripe account** as everything else. The `process-payout` Edge Function uses **STRIPE_SECRET_KEY** from Supabase secrets (your live key). So buy-ins, the 10% fees transfer, and winner payouts are all on live.
+
+---
+
+## Payouts: bank account only (for now)
+
+**Right now winners can only get paid to a bank account.** In the app they add routing + account number; the prize is transferred to their Stripe Connect account and then to that bank (usually 2–3 business days).
+
+**“Can they use a card instead?”**  
+Stripe supports **Instant Payouts to a debit card** for Connect (funds in ~30 min, US Visa/Mastercard/Discover, with limits and possible fees). That would be a separate feature: let the winner add a debit card as a payout method instead of (or in addition to) a bank account. It’s doable but not implemented yet. So today it has to be **bank account**.
+
+---
+
 ## Enable Apple Pay & Cash App for challenge payments
 
 The app already has Apple Pay and Cash App buttons on the challenge payment screen. To make them work:

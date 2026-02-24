@@ -385,6 +385,16 @@ export default function SettingsScreen({ navigation }) {
           />
         </View>
 
+        {/* Payout methods - bank & card for claiming winnings */}
+        <TouchableOpacity
+          style={styles.row}
+          onPress={() => navigation.navigate('PayoutMethods')}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.rowLabel}>Payout methods</Text>
+          <Ionicons name="chevron-forward" size={20} color="#888888" />
+        </TouchableOpacity>
+
         {/* Log out - underlined row */}
         <TouchableOpacity style={styles.row} onPress={handleLogout} activeOpacity={0.7}>
           <Text style={styles.logoutLabel}>Log out</Text>

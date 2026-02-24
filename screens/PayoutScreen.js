@@ -21,6 +21,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useStripe, CardField } from '@stripe/stripe-react-native';
 import { supabase } from '../lib/supabase';
 import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 import { useFocusEffect } from '@react-navigation/native';
@@ -49,6 +50,7 @@ async function callProcessPayout(payload) {
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function PayoutScreen({ navigation, route }) {
   const { goalListId, goalListName, totalAmount } = route.params;
+  const { createToken } = useStripe();
 
   const [user, setUser]                         = useState(null);
   const [loading, setLoading]                   = useState(false);
@@ -59,6 +61,10 @@ export default function PayoutScreen({ navigation, route }) {
   const [accountHolderName, setAccountHolderName] = useState('');
   const [routingNumber, setRoutingNumber]      = useState('');
   const [accountNumber, setAccountNumber]       = useState('');
+  const [payoutMethods, setPayoutMethods]       = useState({ banks: [], cards: [] });
+  const [selectedMethodId, setSelectedMethodId] = useState(null);
+  const [showAddCard, setShowAddCard]           = useState(false);
+  const [cardComplete, setCardComplete]         = useState(false);
 
   // Fetch user + check if they already have a bank added for payouts
   useFocusEffect(
@@ -122,15 +128,25 @@ export default function PayoutScreen({ navigation, route }) {
         setPrizeAmount(Math.round((total - fee) * 100) / 100);
       }
 
-      // Check if user already has a bank account added for this payout
+      // Check if user has payout methods (banks/cards)
       const statusData = await callProcessPayout({
         action:       'check_status',
         user_id:      currentUser.id,
         goal_list_id: goalListId,
       });
 
-      if (statusData.onboarding_completed) {
+      const banks = statusData.banks || [];
+      const cards = statusData.cards || [];
+      setPayoutMethods({ banks, cards });
+
+      if (statusData.onboarding_completed && (banks.length > 0 || cards.length > 0)) {
         setStep('claim');
+        const defaultBank = banks.find((b) => b.default_for_currency);
+        const defaultCard = cards.find((c) => c.default_for_currency);
+        if (defaultBank) setSelectedMethodId(defaultBank.id);
+        else if (defaultCard) setSelectedMethodId(defaultCard.id);
+        else if (banks.length) setSelectedMethodId(banks[0].id);
+        else if (cards.length) setSelectedMethodId(cards[0].id);
       } else {
         setStep('add_bank');
       }
@@ -169,12 +185,14 @@ export default function PayoutScreen({ navigation, route }) {
         account_number:     account,
       });
       if (data.success) {
+        const statusData = await callProcessPayout({ action: 'check_status', user_id: user.id, goal_list_id: goalListId });
+        const banks = statusData.banks || [];
+        const cards = statusData.cards || [];
+        setPayoutMethods({ banks, cards });
+        if (banks.length) setSelectedMethodId(banks[banks.length - 1].id);
+        else if (cards.length) setSelectedMethodId(cards[0].id);
         setStep('claim');
-        if (data.already_connected) {
-          // They already had a bank; no message needed
-        } else {
-          Alert.alert('Bank added', 'Tap "Claim" below to send your winnings to this account.');
-        }
+        Alert.alert('Bank added', 'Tap "Claim" below to send your winnings to this account.');
       }
     } catch (err) {
       Alert.alert('Error', err.message || 'Could not add bank account');
@@ -183,11 +201,62 @@ export default function PayoutScreen({ navigation, route }) {
     }
   };
 
-  // ── Step 2: Transfer prize pool to connected account ────────────────────
+  const handleAddCard = async () => {
+    if (!cardComplete) {
+      Alert.alert('Complete card', 'Please enter a valid debit card.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { token } = await createToken({ type: 'Card', currency: 'usd' });
+      if (!token?.id) throw new Error('Could not create card token');
+      await callProcessPayout({
+        action: 'add_card',
+        user_id: user.id,
+        goal_list_id: goalListId,
+        card_token: token.id,
+      });
+      const statusData = await callProcessPayout({ action: 'check_status', user_id: user.id, goal_list_id: goalListId });
+      const banks = statusData.banks || [];
+      const cards = statusData.cards || [];
+      setPayoutMethods({ banks, cards });
+      if (cards.length) setSelectedMethodId(cards[cards.length - 1].id);
+      else if (banks.length) setSelectedMethodId(banks[0].id);
+      setStep('claim');
+      setShowAddCard(false);
+      setCardComplete(false);
+      Alert.alert('Card added', 'Tap "Claim" below for an instant payout to this debit card.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Could not add card');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Step 2: Transfer prize pool to selected method ──────────────────────
+  const allMethods = [
+    ...payoutMethods.banks.map((b) => ({ ...b, type: 'bank' })),
+    ...payoutMethods.cards.map((c) => ({ ...c, type: 'card' })),
+  ];
+  const selectedMethod = allMethods.find((m) => m.id === selectedMethodId);
+  const isInstant = selectedMethod?.type === 'card';
+  // Instant payout fee: $0.35 per $20 (same as backend)
+  const INSTANT_FEE_PER_20 = 0.35;
+  const instantFee = isInstant ? Math.round((prizeAmount / 20) * INSTANT_FEE_PER_20 * 100) / 100 : 0;
+  const netAmount = prizeAmount - instantFee;
+
   const handleClaimWinnings = async () => {
+    const destination = selectedMethod
+      ? (selectedMethod.type === 'card' ? `${selectedMethod.brand} •••• ${selectedMethod.last4}` : `Bank •••• ${selectedMethod.last4}`)
+      : 'your payout method';
+    const timing = isInstant ? 'Funds usually arrive within 30 minutes (instant).' : 'This usually arrives within 2 business days.';
+    const confirmAmount = isInstant ? netAmount : prizeAmount;
+    const confirmMsg = isInstant
+      ? `$${confirmAmount.toFixed(2)} will be sent to ${destination} (instant fee $${instantFee.toFixed(2)} applied).`
+      : `Transfer $${confirmAmount.toFixed(2)} to ${destination}?`;
     Alert.alert(
       'Confirm Claim',
-      `Transfer $${prizeAmount.toFixed(2)} to your connected bank account?`,
+      confirmMsg,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -195,15 +264,18 @@ export default function PayoutScreen({ navigation, route }) {
           onPress: async () => {
             setLoading(true);
             try {
-              await callProcessPayout({
-                action:       'transfer',
-                user_id:      user.id,
-                goal_list_id: goalListId,
+              const data = await callProcessPayout({
+                action:               'transfer',
+                user_id:              user.id,
+                goal_list_id:         goalListId,
+                external_account_id:  selectedMethodId || undefined,
               });
               setStep('done');
+              const received = data.amount ?? confirmAmount;
+              const feeNote = data.instant_fee ? ` (instant fee $${Number(data.instant_fee).toFixed(2)} applied)` : '';
               Alert.alert(
                 '🎉 Payout Initiated!',
-                `$${prizeAmount.toFixed(2)} is on its way to your bank account. This usually arrives within 2 business days.`,
+                `$${received.toFixed(2)} is on its way. ${timing}${feeNote}`,
                 [{ text: 'OK', onPress: () => navigation.goBack() }]
               );
             } catch (err) {
@@ -355,29 +427,98 @@ export default function PayoutScreen({ navigation, route }) {
               <Ionicons name="shield-checkmark-outline" size={18} color="#4CAF50" />
               <Text style={styles.infoText}>We don't store your full account number. Payouts are secure.</Text>
             </View>
+
+            {!showAddCard ? (
+              <TouchableOpacity style={styles.addCardLink} onPress={() => setShowAddCard(true)}>
+                <Ionicons name="card-outline" size={18} color="#4CAF50" />
+                <Text style={styles.addCardLinkText}>Or add debit card for instant payout</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.addCardForm}>
+                <Text style={styles.addCardFormTitle}>Add debit card (instant payout)</Text>
+                <CardField
+                  postalCodeEnabled={false}
+                  placeholders={{ number: '4242 4242 4242 4242' }}
+                  cardStyle={{
+                    backgroundColor: '#1a1a1a',
+                    borderColor: '#2a2a2a',
+                    borderWidth: 1,
+                    textColor: '#ffffff',
+                    fontSize: 16,
+                  }}
+                  style={styles.cardField}
+                  onCardChange={(cardDetails) => setCardComplete(cardDetails.complete)}
+                />
+                <View style={styles.addCardFormButtons}>
+                  <TouchableOpacity onPress={() => { setShowAddCard(false); setCardComplete(false); }}>
+                    <Text style={styles.cancelLinkText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.addCardButton, (loading || !cardComplete) && styles.primaryButtonDisabled]}
+                    onPress={handleAddCard}
+                    disabled={loading || !cardComplete}
+                  >
+                    {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Add card</Text>}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
         )}
 
-        {/* ── STEP 2: Claim ── */}
+        {/* ── STEP 2: Claim (choose method or use default) ── */}
         {step === 'claim' && (
           <View style={styles.stepCard}>
             <View style={styles.stepHeader}>
               <View style={[styles.stepBadge, styles.stepBadgeGreen]}>
                 <Text style={styles.stepBadgeText}>Step 2 of 2</Text>
               </View>
-              <Text style={styles.stepTitle}>Ready to get paid</Text>
+              <Text style={styles.stepTitle}>Choose payout method</Text>
               <Text style={styles.stepSubtext}>
-                Your bank account is added. Tap below to send your winnings.
+                Send winnings to a saved bank (2 business days) or debit card (instant).
               </Text>
             </View>
 
-            <View style={styles.infoRow}>
-              <Ionicons name="checkmark-circle" size={18} color="#4CAF50" />
-              <Text style={[styles.infoText, { color: '#4CAF50' }]}>Bank account added</Text>
-            </View>
+            {allMethods.map((m) => (
+              <TouchableOpacity
+                key={m.id}
+                style={[styles.methodOption, selectedMethodId === m.id && styles.methodOptionSelected]}
+                onPress={() => setSelectedMethodId(m.id)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.methodOptionLeft}>
+                  <Ionicons name={m.type === 'card' ? 'card' : 'business'} size={22} color="#ffffff" />
+                  <View>
+                    <Text style={styles.methodOptionLabel}>
+                      {m.type === 'card' ? `${m.brand} •••• ${m.last4}` : `Bank •••• ${m.last4}`}
+                    </Text>
+                    <Text style={styles.methodOptionSub}>
+                      {m.type === 'card' ? 'Instant (≈30 min)' : 'Standard (2 business days)'}
+                    </Text>
+                  </View>
+                </View>
+                {selectedMethodId === m.id && (
+                  <Ionicons name="checkmark-circle" size={24} color="#4CAF50" />
+                )}
+              </TouchableOpacity>
+            ))}
+
+            {isInstant && instantFee > 0 && (
+              <View style={styles.instantFeeRow}>
+                <Text style={styles.instantFeeLabel}>Instant payout fee ($0.35 per $20)</Text>
+                <Text style={styles.instantFeeValue}>-${instantFee.toFixed(2)}</Text>
+              </View>
+            )}
+            {isInstant && instantFee > 0 && (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoText}>You'll receive <Text style={styles.netAmountText}>${netAmount.toFixed(2)}</Text></Text>
+              </View>
+            )}
             <View style={styles.infoRow}>
               <Ionicons name="time-outline" size={18} color="#888888" />
-              <Text style={styles.infoText}>Money usually arrives within 2 business days</Text>
+              <Text style={styles.infoText}>
+                {isInstant ? 'Instant payouts usually arrive within 30 minutes.' : 'Bank payouts usually arrive within 2 business days.'}
+              </Text>
             </View>
           </View>
         )}
@@ -413,7 +554,9 @@ export default function PayoutScreen({ navigation, route }) {
               ? <ActivityIndicator size="small" color="#ffffff" />
               : <>
                   <Ionicons name="cash-outline" size={20} color="#ffffff" />
-                  <Text style={styles.primaryButtonText}>Claim ${prizeAmount.toFixed(2)}</Text>
+                  <Text style={styles.primaryButtonText}>
+                    Claim ${(isInstant ? netAmount : prizeAmount).toFixed(2)}
+                  </Text>
                 </>
             }
           </TouchableOpacity>
@@ -612,6 +755,107 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#888888',
     lineHeight: 18,
+  },
+  methodOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    backgroundColor: '#111111',
+    borderRadius: 12,
+    marginBottom: 10,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  methodOptionSelected: {
+    borderColor: '#4CAF50',
+  },
+  methodOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  methodOptionLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  methodOptionSub: {
+    fontSize: 12,
+    color: '#888888',
+    marginTop: 2,
+  },
+  instantFeeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#111111',
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  instantFeeLabel: {
+    fontSize: 14,
+    color: '#888888',
+  },
+  instantFeeValue: {
+    fontSize: 14,
+    color: '#ff6b6b',
+    fontWeight: '600',
+  },
+  netAmountText: {
+    color: '#4CAF50',
+    fontWeight: '700',
+  },
+  addCardLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingVertical: 8,
+  },
+  addCardLinkText: {
+    fontSize: 15,
+    color: '#4CAF50',
+    fontWeight: '500',
+  },
+  addCardForm: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a2a',
+  },
+  addCardFormTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#cccccc',
+    marginBottom: 10,
+  },
+  cardField: {
+    width: '100%',
+    height: 50,
+    marginBottom: 12,
+  },
+  addCardFormButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  cancelLinkText: {
+    fontSize: 15,
+    color: '#888888',
+  },
+  addCardButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4CAF50',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    gap: 8,
   },
 
   // ── Done state
