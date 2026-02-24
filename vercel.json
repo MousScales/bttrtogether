@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/join/:id", "destination": "/api/join/:id" },
+    { "source": "/add-me/:id", "destination": "/api/add-me/:id" }
+  ]
+}

@@ -1,9 +1,10 @@
 import { NavigationContainer, getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { Linking } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { StripeProvider } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
 import { STRIPE_PUBLISHABLE_KEY } from './lib/stripe';
@@ -22,7 +23,11 @@ import AddFriendsStepScreen from './screens/AddFriendsStepScreen';
 import GroupGoalPaymentScreen from './screens/GroupGoalPaymentScreen';
 import PayoutScreen from './screens/PayoutScreen';
 import AddGoalsScreen from './screens/AddGoalsScreen';
+import GoalListSettingsScreen from './screens/GoalListSettingsScreen';
 import MoneyScreen from './screens/MoneyScreen';
+import JoinChallengeScreen from './screens/JoinChallengeScreen';
+import AddMeScreen from './screens/AddMeScreen';
+import { usePushNotifications } from './hooks/usePushNotifications';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -94,6 +99,20 @@ function ProfileStack() {
       <Stack.Screen 
         name="Payout" 
         component={PayoutScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen 
+        name="GoalListSettings" 
+        component={GoalListSettingsScreen}
+        options={{
+          presentation: 'modal',
+        }}
+      />
+      <Stack.Screen 
+        name="AddFriendsToGoal" 
+        component={AddFriendsToGoalScreen}
         options={{
           presentation: 'modal',
         }}
@@ -241,12 +260,19 @@ function MainTabs() {
   );
 }
 
+const JOIN_LINK_PREFIX = 'bttrtogether://join/';
+const ADD_ME_LINK_PREFIX = 'bttrtogether://add-me/';
+const PAYOUT_RETURN_PREFIX = 'bttrtogether://payout';
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [hasProfile, setHasProfile] = useState(false);
   const [hasGoals, setHasGoals] = useState(false);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
+  const navigationRef = useRef(null);
+
+  usePushNotifications(!!session);
 
   useEffect(() => {
     // Check for existing session
@@ -274,6 +300,41 @@ export default function App() {
       
       return () => clearInterval(interval);
     }
+  }, [session, hasProfile, hasGoals]);
+
+  // Handle deep links: bttrtogether://join/GOAL_LIST_ID and bttrtogether://add-me/USER_ID
+  useEffect(() => {
+    if (!session || !hasProfile || !hasGoals) return;
+
+    const handleUrl = (url) => {
+      if (!url || typeof url !== 'string') return;
+      const clean = url.split('?')[0].trim();
+      if (clean.startsWith(JOIN_LINK_PREFIX)) {
+        const goalListId = clean.slice(JOIN_LINK_PREFIX.length).trim();
+        if (goalListId && navigationRef.current?.isReady()) {
+          navigationRef.current.navigate('JoinChallenge', { goalListId });
+        }
+        return;
+      }
+      if (clean.startsWith(ADD_ME_LINK_PREFIX)) {
+        const userId = clean.slice(ADD_ME_LINK_PREFIX.length).trim();
+        if (userId && navigationRef.current?.isReady()) {
+          navigationRef.current.navigate('AddMe', { userId });
+        }
+        return;
+      }
+      if (clean.startsWith(PAYOUT_RETURN_PREFIX)) {
+        if (navigationRef.current?.isReady()) {
+          navigationRef.current.navigate('MainApp');
+        }
+      }
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleUrl(url);
+    });
+    const sub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
+    return () => sub.remove();
   }, [session, hasProfile, hasGoals]);
 
   const checkProfileAndGoals = async (session) => {
@@ -322,7 +383,7 @@ export default function App() {
       publishableKey={STRIPE_PUBLISHABLE_KEY}
       merchantIdentifier="merchant.com.mousscales.bttrtogether"
     >
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <StatusBar style="light" />
         <RootStack.Navigator screenOptions={{ headerShown: false }}>
           {!session ? (
@@ -332,7 +393,19 @@ export default function App() {
           ) : !hasGoals ? (
             <RootStack.Screen name="CreateGoalList" component={CreateGoalListScreen} />
           ) : (
-            <RootStack.Screen name="MainApp" component={MainTabs} />
+            <>
+              <RootStack.Screen name="MainApp" component={MainTabs} />
+              <RootStack.Screen
+                name="JoinChallenge"
+                component={JoinChallengeScreen}
+                options={{ presentation: 'modal' }}
+              />
+              <RootStack.Screen
+                name="AddMe"
+                component={AddMeScreen}
+                options={{ presentation: 'modal' }}
+              />
+            </>
           )}
         </RootStack.Navigator>
     </NavigationContainer>

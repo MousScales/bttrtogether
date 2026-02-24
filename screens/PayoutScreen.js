@@ -1,19 +1,12 @@
 /**
  * PayoutScreen
  *
- * Two-step winner payout flow:
- *   Step 1 — "Connect Your Bank"
- *     • Calls the `process-payout` Supabase function (action: "create_account")
- *     • Opens Stripe Express onboarding URL in the device browser
- *     • Winner adds their bank account on Stripe's hosted page
- *
- *   Step 2 — "Claim Winnings"
- *     • Calls `process-payout` (action: "check_status") to verify onboarding
- *     • If complete, calls (action: "transfer") to send prize pool to their account
- *     • Stripe then pays out to their bank (usually 2 business days)
+ * Depop-style payout: add bank in-app, then claim.
+ *   Step 1 — "Add bank account": in-app form (name, routing, account number).
+ *   Step 2 — "Claim winnings": transfer prize to their bank (arrives in ~2 business days).
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -23,7 +16,9 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
-  Linking,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
@@ -33,7 +28,11 @@ import { useFocusEffect } from '@react-navigation/native';
 const PLATFORM_FEE_PERCENT = 0.10; // 10 %
 
 async function callProcessPayout(payload) {
-  const response = await fetch(`${getSupabaseFunctionsUrl()}/process-payout`, {
+  const baseUrl = getSupabaseFunctionsUrl();
+  if (!baseUrl || !baseUrl.startsWith('http')) {
+    throw new Error('Invalid Supabase URL. Check EXPO_PUBLIC_SUPABASE_URL in .env');
+  }
+  const response = await fetch(`${baseUrl}/process-payout`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -54,11 +53,14 @@ export default function PayoutScreen({ navigation, route }) {
   const [user, setUser]                         = useState(null);
   const [loading, setLoading]                   = useState(false);
   const [checkingStatus, setCheckingStatus]     = useState(true);
-  const [step, setStep]                         = useState('loading'); // 'loading' | 'connect_bank' | 'claim' | 'done'
+  const [step, setStep]                         = useState('loading'); // 'loading' | 'add_bank' | 'claim' | 'done'
   const [prizeAmount, setPrizeAmount]           = useState(0);
   const [platformFee, setPlatformFee]           = useState(0);
+  const [accountHolderName, setAccountHolderName] = useState('');
+  const [routingNumber, setRoutingNumber]      = useState('');
+  const [accountNumber, setAccountNumber]       = useState('');
 
-  // Fetch user + check existing Connect status when screen loads or regains focus
+  // Fetch user + check if they already have a bank added for payouts
   useFocusEffect(
     useCallback(() => {
       initialise();
@@ -72,24 +74,45 @@ export default function PayoutScreen({ navigation, route }) {
       if (!currentUser) { navigation.goBack(); return; }
       setUser(currentUser);
 
-      // Fetch goal list prize amounts
+      // Fetch goal list prize amounts and tie info
       const { data: goalList } = await supabase
         .from('goal_lists')
-        .select('prize_pool_amount, platform_fee_amount, total_pot, payout_status')
+        .select('prize_pool_amount, platform_fee_amount, total_pot, payout_status, winner_id, tie_winner_ids')
         .eq('id', goalListId)
         .single();
 
       if (goalList) {
         const total     = goalList.total_pot || parseFloat(totalAmount) || 0;
         const fee       = goalList.platform_fee_amount || Math.round(total * PLATFORM_FEE_PERCENT * 100) / 100;
-        const prize     = goalList.prize_pool_amount   || Math.round((total - fee) * 100) / 100;
+        const fullPrize = goalList.prize_pool_amount   || Math.round((total - fee) * 100) / 100;
+        const isTie     = Array.isArray(goalList.tie_winner_ids) && goalList.tie_winner_ids.length > 1;
+        const isTiedWinner = isTie && goalList.tie_winner_ids.includes(currentUser.id);
+        const prize     = isTiedWinner ? Math.round((fullPrize / goalList.tie_winner_ids.length) * 100) / 100 : fullPrize;
         setPlatformFee(fee);
         setPrizeAmount(prize);
 
-        if (goalList.payout_status === 'completed' || goalList.payout_status === 'processing') {
+        if (goalList.payout_status === 'completed') {
           setStep('done');
           setCheckingStatus(false);
           return;
+        }
+        if (goalList.payout_status === 'processing' && !isTie) {
+          setStep('done');
+          setCheckingStatus(false);
+          return;
+        }
+        if (isTie && goalList.payout_status === 'processing') {
+          const { data: myPayout } = await supabase
+            .from('payouts')
+            .select('id')
+            .eq('goal_list_id', goalListId)
+            .eq('winner_id', currentUser.id)
+            .maybeSingle();
+          if (myPayout) {
+            setStep('done');
+            setCheckingStatus(false);
+            return;
+          }
         }
       } else {
         // Fallback calculation from the route param
@@ -99,7 +122,7 @@ export default function PayoutScreen({ navigation, route }) {
         setPrizeAmount(Math.round((total - fee) * 100) / 100);
       }
 
-      // Check Stripe Connect status for this user
+      // Check if user already has a bank account added for this payout
       const statusData = await callProcessPayout({
         action:       'check_status',
         user_id:      currentUser.id,
@@ -109,70 +132,52 @@ export default function PayoutScreen({ navigation, route }) {
       if (statusData.onboarding_completed) {
         setStep('claim');
       } else {
-        setStep('connect_bank');
+        setStep('add_bank');
       }
     } catch (err) {
-      // If function call fails (e.g. user not winner), still show connect_bank
-      setStep('connect_bank');
+      setStep('add_bank');
     } finally {
       setCheckingStatus(false);
     }
   };
 
-  // ── Step 1: Open Stripe Connect Express onboarding ──────────────────────
-  const handleConnectBank = async () => {
-    setLoading(true);
-    try {
-      const data = await callProcessPayout({
-        action:       'create_account',
-        user_id:      user.id,
-        goal_list_id: goalListId,
-        return_url:   'bttrtogetherapp://payout',
-      });
-
-      if (data.already_connected) {
-        // Already onboarded — move straight to claim
-        setStep('claim');
-        return;
-      }
-
-      if (data.onboarding_url) {
-        await Linking.openURL(data.onboarding_url);
-        // The user will return to the app after onboarding.
-        // When the screen regains focus, useFocusEffect re-checks status.
-        Alert.alert(
-          'Bank Connected!',
-          'After finishing setup in your browser, come back here and tap "Check Status" to verify your bank was connected.',
-        );
-      }
-    } catch (err) {
-      Alert.alert('Error', err.message || 'Could not start bank onboarding');
-    } finally {
-      setLoading(false);
+  // ── Step 1: Add bank in-app (Depop-style) ─────────────────────────────────
+  const handleAddBank = async () => {
+    const name = (accountHolderName || '').trim();
+    const routing = (routingNumber || '').replace(/\D/g, '');
+    const account = (accountNumber || '').replace(/\D/g, '');
+    if (!name) {
+      Alert.alert('Missing info', 'Please enter the name on your bank account.');
+      return;
     }
-  };
-
-  // ── Check status after returning from browser ────────────────────────────
-  const handleCheckStatus = async () => {
+    if (routing.length !== 9) {
+      Alert.alert('Invalid routing number', 'Routing number must be 9 digits.');
+      return;
+    }
+    if (account.length < 4 || account.length > 17) {
+      Alert.alert('Invalid account number', 'Account number must be 4–17 digits.');
+      return;
+    }
     setLoading(true);
     try {
       const data = await callProcessPayout({
-        action:       'check_status',
-        user_id:      user.id,
-        goal_list_id: goalListId,
+        action:             'add_bank',
+        user_id:            user.id,
+        goal_list_id:       goalListId,
+        account_holder_name: name,
+        routing_number:     routing,
+        account_number:     account,
       });
-
-      if (data.onboarding_completed) {
+      if (data.success) {
         setStep('claim');
-        Alert.alert('Bank Connected!', 'Your bank account is verified. Tap "Claim Winnings" to receive your prize.');
-      } else {
-        Alert.alert(
-          'Not Yet Verified',
-          'Stripe hasn\'t finished verifying your bank account. Please complete all steps in the browser and try again.',
-        );
+        if (data.already_connected) {
+          // They already had a bank; no message needed
+        } else {
+          Alert.alert('Bank added', 'Tap "Claim" below to send your winnings to this account.');
+        }
       }
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not check account status');
+      Alert.alert('Error', err.message || 'Could not add bank account');
     } finally {
       setLoading(false);
     }
@@ -255,6 +260,11 @@ export default function PayoutScreen({ navigation, route }) {
 
   return (
     <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      >
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
@@ -264,7 +274,7 @@ export default function PayoutScreen({ navigation, route }) {
         <View style={styles.backButton} />
       </View>
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer} keyboardShouldPersistTaps="handled">
         {/* Trophy Banner */}
         <View style={styles.winnerBanner}>
           <Ionicons name="trophy" size={52} color="#FFD700" />
@@ -286,30 +296,64 @@ export default function PayoutScreen({ navigation, route }) {
           </View>
         )}
 
-        {/* ── STEP 1: Connect Bank ── */}
-        {step === 'connect_bank' && (
+        {/* ── STEP 1: Add bank account (in-app form) ── */}
+        {step === 'add_bank' && (
           <View style={styles.stepCard}>
             <View style={styles.stepHeader}>
               <View style={styles.stepBadge}>
                 <Text style={styles.stepBadgeText}>Step 1 of 2</Text>
               </View>
-              <Text style={styles.stepTitle}>Connect Your Bank</Text>
+              <Text style={styles.stepTitle}>Add your bank account</Text>
               <Text style={styles.stepSubtext}>
-                Link your bank account via Stripe so we can send your winnings securely. Takes about 2 minutes.
+                Enter your checking account details below. We'll send your winnings here—no separate signup.
               </Text>
+            </View>
+
+            <View style={styles.payoutRowsWrap}>
+              <View style={styles.payoutRow}>
+                <Text style={styles.payoutRowLabel}>Name on account</Text>
+                <TextInput
+                  style={styles.payoutRowInput}
+                  value={accountHolderName}
+                  onChangeText={setAccountHolderName}
+                  placeholder="e.g. Jane Smith"
+                  placeholderTextColor="#666666"
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  editable={!loading}
+                />
+              </View>
+              <View style={styles.payoutRow}>
+                <Text style={styles.payoutRowLabel}>Routing number (9 digits)</Text>
+                <TextInput
+                  style={styles.payoutRowInput}
+                  value={routingNumber}
+                  onChangeText={(t) => setRoutingNumber(t.replace(/\D/g, '').slice(0, 9))}
+                  placeholder="000000000"
+                  placeholderTextColor="#666666"
+                  keyboardType="number-pad"
+                  maxLength={9}
+                  editable={!loading}
+                />
+              </View>
+              <View style={styles.payoutRow}>
+                <Text style={styles.payoutRowLabel}>Account number</Text>
+                <TextInput
+                  style={styles.payoutRowInput}
+                  value={accountNumber}
+                  onChangeText={(t) => setAccountNumber(t.replace(/\D/g, '').slice(0, 17))}
+                  placeholder="Your account number"
+                  placeholderTextColor="#666666"
+                  keyboardType="number-pad"
+                  maxLength={17}
+                  editable={!loading}
+                />
+              </View>
             </View>
 
             <View style={styles.infoRow}>
               <Ionicons name="shield-checkmark-outline" size={18} color="#4CAF50" />
-              <Text style={styles.infoText}>Bank-level security powered by Stripe</Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Ionicons name="time-outline" size={18} color="#888888" />
-              <Text style={styles.infoText}>Funds arrive within 2 business days</Text>
-            </View>
-            <View style={styles.infoRow}>
-              <Ionicons name="lock-closed-outline" size={18} color="#888888" />
-              <Text style={styles.infoText}>Your banking details are never stored in our app</Text>
+              <Text style={styles.infoText}>We don't store your full account number. Payouts are secure.</Text>
             </View>
           </View>
         )}
@@ -321,47 +365,39 @@ export default function PayoutScreen({ navigation, route }) {
               <View style={[styles.stepBadge, styles.stepBadgeGreen]}>
                 <Text style={styles.stepBadgeText}>Step 2 of 2</Text>
               </View>
-              <Text style={styles.stepTitle}>Bank Account Connected</Text>
+              <Text style={styles.stepTitle}>Ready to get paid</Text>
               <Text style={styles.stepSubtext}>
-                Your bank account is verified. Tap below to transfer your winnings.
+                Your bank account is added. Tap below to send your winnings.
               </Text>
             </View>
 
             <View style={styles.infoRow}>
               <Ionicons name="checkmark-circle" size={18} color="#4CAF50" />
-              <Text style={[styles.infoText, { color: '#4CAF50' }]}>Bank account verified</Text>
+              <Text style={[styles.infoText, { color: '#4CAF50' }]}>Bank account added</Text>
             </View>
             <View style={styles.infoRow}>
-              <Ionicons name="flash-outline" size={18} color="#888888" />
-              <Text style={styles.infoText}>Transfer happens instantly — bank arrival in ~2 days</Text>
+              <Ionicons name="time-outline" size={18} color="#888888" />
+              <Text style={styles.infoText}>Money usually arrives within 2 business days</Text>
             </View>
           </View>
         )}
       </ScrollView>
 
       {/* Footer CTA */}
-      {step === 'connect_bank' && (
+      {step === 'add_bank' && (
         <View style={styles.footer}>
           <TouchableOpacity
             style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
-            onPress={handleConnectBank}
+            onPress={handleAddBank}
             disabled={loading}
           >
             {loading
               ? <ActivityIndicator size="small" color="#ffffff" />
               : <>
-                  <Ionicons name="link-outline" size={20} color="#ffffff" />
-                  <Text style={styles.primaryButtonText}>Connect Bank Account</Text>
+                  <Ionicons name="card-outline" size={20} color="#ffffff" />
+                  <Text style={styles.primaryButtonText}>Add bank account</Text>
                 </>
             }
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={handleCheckStatus}
-            disabled={loading}
-          >
-            <Text style={styles.secondaryButtonText}>I've already connected → Check Status</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -383,6 +419,7 @@ export default function PayoutScreen({ navigation, route }) {
           </TouchableOpacity>
         </View>
       )}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -539,6 +576,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#888888',
     lineHeight: 20,
+  },
+  payoutRowsWrap: {
+    marginTop: 8,
+  },
+  payoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#222222',
+  },
+  payoutRowLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#ffffff',
+  },
+  payoutRowInput: {
+    fontSize: 16,
+    color: '#ffffff',
+    padding: 0,
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 12,
+    minWidth: 100,
   },
   infoRow: {
     flexDirection: 'row',

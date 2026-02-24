@@ -20,6 +20,7 @@ module.exports = {
       resizeMode: "contain",
       backgroundColor: "#ffffff"
     },
+    plugins: ["expo-notifications"],
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.mousscales.bttrtogether",
@@ -55,6 +56,9 @@ module.exports = {
         process.env.STRIPE_PUBLISHABLE ||
         process.env.STRIPE_KEY ||
         '',
+      inviteWebBaseUrl:
+        process.env.EXPO_PUBLIC_INVITE_WEB_BASE_URL ||
+        'https://bttrsite.vercel.app',
     }
   }
 };

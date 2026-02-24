@@ -2,6 +2,7 @@
   "expo": {
     "name": "bttrtogether",
     "slug": "bttrtogether",
+    "scheme": "bttrtogether",
     "version": "1.0.0",
     "owner": "digaifounder",
     "orientation": "portrait",

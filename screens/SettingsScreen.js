@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase, getAvatarDisplayUrl, getAvatarDisplayUrlAsync } from '../lib/supabase';
+import { savePushTokenToProfile } from '../hooks/usePushNotifications';
 
 /** Decode base64 to ArrayBuffer so Supabase gets real image bytes (fixes black/missing pfp in RN). */
 function base64ToArrayBuffer(base64) {
@@ -27,7 +28,7 @@ function base64ToArrayBuffer(base64) {
 import { useRealtime } from '../hooks/useRealtime';
 
 export default function SettingsScreen({ navigation }) {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
@@ -44,6 +45,9 @@ export default function SettingsScreen({ navigation }) {
 
   // Preferences
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+
+  // Which field is being edited (tap to edit)
+  const [editingField, setEditingField] = useState(null);
 
   useEffect(() => {
     loadProfile();
@@ -72,8 +76,6 @@ export default function SettingsScreen({ navigation }) {
 
   async function loadProfile() {
     try {
-      setLoading(true);
-
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       if (userError) throw userError;
       if (!user) {
@@ -234,6 +236,8 @@ export default function SettingsScreen({ navigation }) {
 
       if (profileError) throw profileError;
 
+      if (!notificationsEnabled) await savePushTokenToProfile(null);
+
       if (email !== originalEmail && email.trim()) {
         const { error: emailError } = await supabase.auth.updateUser({
           email: email.trim(),
@@ -270,6 +274,7 @@ export default function SettingsScreen({ navigation }) {
         style: 'destructive',
         onPress: async () => {
           try {
+            await savePushTokenToProfile(null);
             await supabase.auth.signOut();
           } catch (error) {
             console.error('Error logging out:', error);
@@ -280,21 +285,41 @@ export default function SettingsScreen({ navigation }) {
     ]);
   }
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#ffffff" />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   const displayAvatar = localAvatarUri || resolvedAvatarUri || getAvatarDisplayUrl(avatarUrl) || avatarUrl;
+
+  const renderRow = (label, value, fieldKey) => {
+    const isEditing = editingField === fieldKey;
+    return (
+      <TouchableOpacity
+        key={fieldKey}
+        style={styles.row}
+        onPress={() => setEditingField(isEditing ? null : fieldKey)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.rowLabel}>{label}</Text>
+        {isEditing ? (
+          <TextInput
+            style={styles.rowInput}
+            value={fieldKey === 'name' ? name : fieldKey === 'username' ? username : email}
+            onChangeText={fieldKey === 'name' ? setName : fieldKey === 'username' ? setUsername : setEmail}
+            placeholder={fieldKey === 'name' ? 'Your name' : fieldKey === 'username' ? 'username' : 'your@email.com'}
+            placeholderTextColor="#666666"
+            autoCapitalize={fieldKey === 'name' ? 'words' : 'none'}
+            keyboardType={fieldKey === 'email' ? 'email-address' : 'default'}
+            autoFocus
+            onBlur={() => setEditingField(null)}
+          />
+        ) : (
+          <Text style={styles.rowValue} numberOfLines={1}>
+            {fieldKey === 'name' ? (name || '') : fieldKey === 'username' ? (username ? `@${username}` : '') : (email || '')}
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.headerBack}
@@ -303,7 +328,7 @@ export default function SettingsScreen({ navigation }) {
         >
           <Ionicons name="chevron-back" size={28} color="#ffffff" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Profile & Settings</Text>
+        <Text style={styles.headerTitle}>Settings</Text>
         <View style={styles.headerRight} />
       </View>
 
@@ -311,99 +336,62 @@ export default function SettingsScreen({ navigation }) {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        {/* Profile Section */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Profile</Text>
-
-          <View style={styles.avatarRow}>
+        {/* Big profile photo */}
+        <View style={styles.avatarSection}>
+          <TouchableOpacity
+            onPress={pickImage}
+            disabled={uploadingAvatar}
+            style={styles.bigAvatarWrap}
+            activeOpacity={0.8}
+          >
             {displayAvatar ? (
-              <Image source={{ uri: displayAvatar }} style={styles.avatar} />
+              <Image source={{ uri: displayAvatar }} style={styles.bigAvatar} />
             ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarInitial}>
+              <View style={styles.bigAvatarPlaceholder}>
+                <Text style={styles.bigAvatarInitial}>
                   {name.charAt(0).toUpperCase() || '?'}
                 </Text>
               </View>
             )}
-            <TouchableOpacity
-              style={styles.changePhotoButton}
-              onPress={pickImage}
-              disabled={uploadingAvatar}
-            >
-              <Ionicons name="camera-outline" size={18} color="#007AFF" />
-              <Text style={styles.changePhotoText}>
-                {uploadingAvatar ? 'Uploading...' : 'Change Photo'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Name</Text>
-            <TextInput
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="Your name"
-              placeholderTextColor="#666666"
-            />
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Username</Text>
-            <TextInput
-              style={styles.input}
-              value={username}
-              onChangeText={setUsername}
-              placeholder="username"
-              placeholderTextColor="#666666"
-              autoCapitalize="none"
-            />
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Email</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="your@email.com"
-              placeholderTextColor="#666666"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <Text style={styles.hint}>Changing email sends a verification link</Text>
-          </View>
-        </View>
-
-        {/* Preferences Section */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Preferences</Text>
-
-          <View style={styles.preferenceRow}>
-            <View style={styles.preferenceLabel}>
-              <Text style={styles.label}>Push Notifications</Text>
-              <Text style={styles.hint}>Updates from friends</Text>
-            </View>
-            <Switch
-              value={notificationsEnabled}
-              onValueChange={setNotificationsEnabled}
-              trackColor={{ false: '#333333', true: '#34C759' }}
-              thumbColor="#ffffff"
-            />
-          </View>
-        </View>
-
-        {/* Account Section */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Account</Text>
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={20} color="#ff4444" />
-            <Text style={styles.logoutText}>Log out</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={pickImage}
+            disabled={uploadingAvatar}
+            style={styles.changePhotoLink}
+          >
+            <Text style={styles.changePhotoLinkText}>
+              {uploadingAvatar ? 'Uploading...' : 'Change photo'}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Save Button */}
+        {/* Underlined rows - tap to edit */}
+        <View style={styles.rowsBlock}>
+          {renderRow('Name', name, 'name')}
+          {renderRow('Username', username, 'username')}
+          {renderRow('Email', email, 'email')}
+        </View>
+
+        {/* Notifications - underlined row */}
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>Notifications</Text>
+          <Switch
+            value={notificationsEnabled}
+            onValueChange={setNotificationsEnabled}
+            trackColor={{ false: '#333333', true: '#34C759' }}
+            thumbColor="#ffffff"
+          />
+        </View>
+
+        {/* Log out - underlined row */}
+        <TouchableOpacity style={styles.row} onPress={handleLogout} activeOpacity={0.7}>
+          <Text style={styles.logoutLabel}>Log out</Text>
+          <Ionicons name="chevron-forward" size={20} color="#ff4444" />
+        </TouchableOpacity>
+
+        {/* Save - minimal underline style */}
         <TouchableOpacity
           style={[styles.saveButton, (saving || uploadingAvatar) && styles.saveButtonDisabled]}
           onPress={handleSave}
@@ -412,19 +400,9 @@ export default function SettingsScreen({ navigation }) {
           {saving ? (
             <ActivityIndicator color="#ffffff" />
           ) : (
-            <>
-              <Ionicons
-                name="checkmark-circle"
-                size={22}
-                color={uploadingAvatar ? '#888888' : '#000000'}
-              />
-              <Text style={[
-                styles.saveButtonText,
-                (saving || uploadingAvatar) && styles.saveButtonTextDisabled
-              ]}>
-                Save Changes
-              </Text>
-            </>
+            <Text style={[styles.saveButtonText, (saving || uploadingAvatar) && styles.saveButtonTextDisabled]}>
+              Save changes
+            </Text>
           )}
         </TouchableOpacity>
 
@@ -474,129 +452,97 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 24,
+    paddingHorizontal: 20,
+    paddingTop: 32,
   },
-  card: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-    padding: 20,
-    marginBottom: 20,
-  },
-  cardTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#888888',
-    letterSpacing: 0.5,
-    marginBottom: 16,
-  },
-  avatarRow: {
-    flexDirection: 'row',
+  avatarSection: {
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 40,
   },
-  avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#2a2a2a',
+  bigAvatarWrap: {
+    marginBottom: 12,
   },
-  avatarPlaceholder: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#2a2a2a',
+  bigAvatar: {
+    width: 128,
+    height: 128,
+    borderRadius: 64,
+    backgroundColor: '#1a1a1a',
+  },
+  bigAvatarPlaceholder: {
+    width: 128,
+    height: 128,
+    borderRadius: 64,
+    backgroundColor: '#1a1a1a',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
     borderColor: '#333333',
   },
-  avatarInitial: {
-    fontSize: 28,
+  bigAvatarInitial: {
+    fontSize: 48,
     fontWeight: '700',
     color: '#ffffff',
   },
-  changePhotoButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginLeft: 20,
-  },
-  changePhotoText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#007AFF',
-  },
-  field: {
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: '#0a0a0a',
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#ffffff',
-  },
-  hint: {
-    fontSize: 12,
-    color: '#888888',
-    marginTop: 6,
-  },
-  preferenceRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  changePhotoLink: {
     paddingVertical: 4,
+  },
+  changePhotoLinkText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#007AFF',
+    textDecorationLine: 'underline',
+  },
+  rowsBlock: {
     marginBottom: 8,
   },
-  preferenceLabel: {
-    flex: 1,
-  },
-  logoutButton: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: '#333333',
-    borderRadius: 12,
-    backgroundColor: 'transparent',
+    justifyContent: 'space-between',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#222222',
   },
-  logoutText: {
+  rowLabel: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '500',
+    color: '#ffffff',
+  },
+  rowValue: {
+    fontSize: 16,
+    color: '#888888',
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 12,
+  },
+  rowInput: {
+    fontSize: 16,
+    color: '#ffffff',
+    padding: 0,
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 12,
+    minWidth: 120,
+  },
+  logoutLabel: {
+    fontSize: 16,
+    fontWeight: '500',
     color: '#ff4444',
   },
   saveButton: {
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    backgroundColor: '#ffffff',
     paddingVertical: 16,
-    borderRadius: 12,
-    marginTop: 8,
+    marginTop: 32,
   },
   saveButtonDisabled: {
-    backgroundColor: '#333333',
-    opacity: 0.8,
+    opacity: 0.6,
   },
   saveButtonText: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#000000',
+    color: '#ffffff',
+    textDecorationLine: 'underline',
   },
   saveButtonTextDisabled: {
     color: '#888888',

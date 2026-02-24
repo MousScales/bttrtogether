@@ -10,26 +10,29 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { Asset } from 'expo-asset';
 import { supabase, getAvatarDisplayUrl } from '../lib/supabase';
+import { getInviteWebBaseUrl } from '../lib/config';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRealtime } from '../hooks/useRealtime';
+import { savePushTokenToProfile } from '../hooks/usePushNotifications';
 import React from 'react';
 
 export default function ProfileScreen({ navigation }) {
   const [profile, setProfile] = useState(null);
   const [goalLists, setGoalLists] = useState([]);
   const [goals, setGoals] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [friendSearchModalVisible, setFriendSearchModalVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [addingFriend, setAddingFriend] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
-  const [streak, setStreak] = useState(0);
   const [dateJoined, setDateJoined] = useState(null);
   const [friendRequests, setFriendRequests] = useState([]); // Pending friend requests received
   const [loadingRequests, setLoadingRequests] = useState(false);
@@ -41,6 +44,9 @@ export default function ProfileScreen({ navigation }) {
   const [walletTotalPaid, setWalletTotalPaid] = useState(0);       // total $ user has paid in
   const [walletCurrentlyBetting, setWalletCurrentlyBetting] = useState(0); // $ in active challenges
   const [walletLosses, setWalletLosses] = useState(0);             // $ lost (paid, didn't win)
+  const [walletAvailableExpanded, setWalletAvailableExpanded] = useState(false); // Dropdown for "Available to claim"
+  const [goalListsSectionExpanded, setGoalListsSectionExpanded] = useState(false); // Dropdown for Goal Lists
+  const [myGoalsSectionExpanded, setMyGoalsSectionExpanded] = useState(false);     // Dropdown for My Goals
 
   // Load profile and goals data
   const loadProfileData = async () => {
@@ -95,9 +101,6 @@ export default function ProfileScreen({ navigation }) {
         setDateJoined(joinedDate);
       }
 
-      // Calculate streak
-      await calculateStreak(user.id);
-
       // Load friend requests
       await loadFriendRequests();
 
@@ -108,83 +111,6 @@ export default function ProfileScreen({ navigation }) {
     } catch (error) {
       console.error('Error loading profile data:', error);
       setLoading(false);
-    }
-  };
-
-  // Calculate current streak based on completion data
-  const calculateStreak = async (userId) => {
-    try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      
-      // Get all goal IDs for this user
-      const { data: userGoals } = await supabase
-        .from('goals')
-        .select('id')
-        .eq('user_id', userId);
-      
-      if (!userGoals || userGoals.length === 0) {
-        setStreak(0);
-        return;
-      }
-      
-      const goalIds = userGoals.map(g => g.id);
-      
-      // Get all completions for the last 30 days (to find streak)
-      const startDate = new Date(today);
-      startDate.setDate(startDate.getDate() - 30);
-      
-      const { data: completions } = await supabase
-        .from('goal_completions')
-        .select('completed_at, goal_id')
-        .in('goal_id', goalIds)
-        .eq('user_id', userId)
-        .gte('completed_at', startDate.toISOString().split('T')[0])
-        .order('completed_at', { ascending: false });
-      
-      if (!completions || completions.length === 0) {
-        setStreak(0);
-        return;
-      }
-      
-      // Group completions by date
-      const completionsByDate = {};
-      completions.forEach(c => {
-        const dateStr = c.completed_at.includes('T') 
-          ? c.completed_at.split('T')[0] 
-          : c.completed_at;
-        if (!completionsByDate[dateStr]) {
-          completionsByDate[dateStr] = new Set();
-        }
-        completionsByDate[dateStr].add(c.goal_id);
-      });
-
-      // Check which dates have ALL goals completed
-      const datesWithAllGoalsCompleted = Object.keys(completionsByDate).filter(dateStr => {
-        const completedGoalIds = completionsByDate[dateStr];
-        return completedGoalIds.size === goalIds.length;
-      });
-      
-      // Calculate streak going backwards from today
-      let currentStreak = 0;
-      let checkDate = new Date(today);
-      
-      while (true) {
-        const dateStr = checkDate.toISOString().split('T')[0];
-        const hasAllCompleted = datesWithAllGoalsCompleted.includes(dateStr);
-        
-        if (hasAllCompleted) {
-          currentStreak++;
-          checkDate.setDate(checkDate.getDate() - 1);
-        } else {
-          break;
-        }
-      }
-      
-      setStreak(currentStreak);
-    } catch (error) {
-      console.error('Error calculating streak:', error);
-      setStreak(0);
     }
   };
 
@@ -257,15 +183,36 @@ export default function ProfileScreen({ navigation }) {
   // Load wallet: pending/claimed winnings + paid, currently betting, losses
   const loadWalletData = async (userId) => {
     try {
-      // Pending: goal lists where this user is winner and hasn't been paid out yet
-      const { data: pendingLists } = await supabase
+      // Pending: goal lists where this user is winner (or tied winner) and hasn't been paid out yet (money only; dares have no $ to claim)
+      const { data: singleWinnerLists } = await supabase
         .from('goal_lists')
-        .select('id, name, prize_pool_amount, total_pot')
+        .select('id, name, prize_pool_amount, total_pot, tie_winner_ids, consequence_type')
         .eq('winner_id', userId)
         .eq('payout_status', 'pending');
 
-      const pending = pendingLists || [];
-      const pendingTotal = pending.reduce((sum, g) => sum + parseFloat(g.prize_pool_amount || 0), 0);
+      const { data: tieLists } = await supabase
+        .from('goal_lists')
+        .select('id, name, prize_pool_amount, total_pot, tie_winner_ids, consequence_type')
+        .contains('tie_winner_ids', [userId])
+        .in('payout_status', ['pending', 'processing']);
+
+      let pending = [...(singleWinnerLists || [])];
+      const tieListsFiltered = (tieLists || []).filter(g => Array.isArray(g.tie_winner_ids) && g.tie_winner_ids.length > 1);
+      if (tieListsFiltered.length > 0) {
+        const { data: myPayouts } = await supabase
+          .from('payouts')
+          .select('goal_list_id')
+          .eq('winner_id', userId)
+          .in('goal_list_id', tieListsFiltered.map(g => g.id));
+        const claimedGoalListIds = new Set((myPayouts || []).map(p => p.goal_list_id));
+        tieListsFiltered.forEach(g => {
+          if (!claimedGoalListIds.has(g.id)) {
+            pending.push({ ...g, _shareAmount: (parseFloat(g.prize_pool_amount) || 0) / g.tie_winner_ids.length });
+          }
+        });
+      }
+      pending = pending.filter(g => g.consequence_type !== 'punishment');
+      const pendingTotal = pending.reduce((sum, g) => sum + (g._shareAmount != null ? g._shareAmount : parseFloat(g.prize_pool_amount || 0)), 0);
       setWalletPendingList(pending);
       setWalletPendingTotal(pendingTotal);
 
@@ -564,7 +511,8 @@ export default function ProfileScreen({ navigation }) {
       if (!list || !list.id) return null;
       
       const isGroupGoal = list.type === 'group';
-      const hasStarted = goalListStatuses && goalListStatuses[list.id] !== false; // Default to true if not checked yet
+      // Started if status says so, or list already has started_at (avoids overlay flash before async check)
+      const hasStarted = !!list.started_at || (goalListStatuses && goalListStatuses[list.id] !== false);
       
       // Generate completion history for the goal list
       const history = generateHistory(list.created_at || new Date().toISOString(), !hasStarted);
@@ -605,6 +553,8 @@ export default function ProfileScreen({ navigation }) {
         }
       }
       
+      const isEnded = !!(list.winner_id || (Array.isArray(list.tie_winner_ids) && list.tie_winner_ids.length > 0));
+
       return {
         id: list.id,
         name: list.name || 'Untitled',
@@ -617,6 +567,7 @@ export default function ProfileScreen({ navigation }) {
         currentDayIndex: currentDayIndex,
         isGroupGoal: isGroupGoal,
         hasStarted: hasStarted,
+        isEnded,
         goalList: list,
       };
     }).filter(Boolean); // Remove any null entries
@@ -642,8 +593,16 @@ export default function ProfileScreen({ navigation }) {
 
       for (const goalList of goalLists) {
         if (goalList.type === 'group') {
-          // Primary check: started_at column (set by handleStartGoalList)
-          if (goalList.started_at) {
+          // Always re-fetch started_at from DB so profile matches Goals screen after "Begin" is tapped
+          const { data: freshList } = await supabase
+            .from('goal_lists')
+            .select('started_at')
+            .eq('id', goalList.id)
+            .maybeSingle();
+          const startedAt = freshList?.started_at ?? goalList.started_at;
+          const isStarted = !!startedAt;
+
+          if (isStarted) {
             statuses[goalList.id] = true;
           } else {
             // Fallback: check if all participants have paid (handles legacy rows)
@@ -745,16 +704,6 @@ export default function ProfileScreen({ navigation }) {
 
   const friends = useMemo(() => [], []); // Empty for now
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.safe} edges={['bottom']}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#ffffff" />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -762,7 +711,21 @@ export default function ProfileScreen({ navigation }) {
         <View style={styles.topIcons}>
           <View style={styles.spacer} />
           <View style={styles.topRight}>
-            <TouchableOpacity style={styles.iconButton}>
+            <TouchableOpacity
+              style={styles.iconButton}
+              onPress={async () => {
+                if (!profile?.id) return;
+                const webBase = getInviteWebBaseUrl();
+                const addMeUrl = webBase
+                  ? `${webBase}/add-me/${profile.id}`
+                  : `bttrtogether://add-me/${profile.id}`;
+                try {
+                  await Share.share({ message: addMeUrl, title: 'Add me on Bttr Together' });
+                } catch (e) {
+                  if (e.message && !e.message.includes('cancel')) Alert.alert('Error', 'Could not share.');
+                }
+              }}
+            >
               <Ionicons name="share-outline" size={24} color="#ffffff" />
             </TouchableOpacity>
             <TouchableOpacity 
@@ -810,12 +773,6 @@ export default function ProfileScreen({ navigation }) {
               </Text>
             </View>
           )}
-          <View style={styles.badge}>
-            <Ionicons name="flame" size={16} color="#FF6B35" />
-            <Text style={styles.badgeText}>
-              {streak} Day{streak !== 1 ? 's' : ''} Streak
-            </Text>
-          </View>
         </View>
 
         {/* Wallet Section — simple list, no grey cards or icons */}
@@ -834,29 +791,49 @@ export default function ProfileScreen({ navigation }) {
               <Text style={styles.walletRowLabel}>Losses</Text>
               <Text style={[styles.walletRowValue, walletLosses > 0 && styles.walletRowValueLoss]}>${walletLosses.toFixed(2)}</Text>
             </View>
-            <View style={styles.walletRow}>
+            <TouchableOpacity
+              style={styles.walletRow}
+              onPress={() => setWalletAvailableExpanded((v) => !v)}
+              activeOpacity={0.7}
+            >
               <Text style={styles.walletRowLabel}>Available to claim</Text>
-              <Text style={[styles.walletRowValue, walletPendingTotal > 0 && styles.walletRowValueGreen]}>${walletPendingTotal.toFixed(2)}</Text>
-            </View>
-            {walletPendingList.length > 0 && (
+              <View style={styles.walletRowValueWithChevron}>
+                <Text style={[styles.walletRowValue, walletPendingTotal > 0 && styles.walletRowValueGreen]}>
+                  ${walletPendingTotal.toFixed(2)}
+                </Text>
+                <Ionicons
+                  name={walletAvailableExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color="#888"
+                  style={styles.walletChevron}
+                />
+              </View>
+            </TouchableOpacity>
+            {walletAvailableExpanded && walletPendingList.length > 0 && (
               <View style={styles.walletPendingList}>
+                <Text style={styles.walletPendingHint}>Tap a challenge to request payout (link bank via Stripe)</Text>
                 {walletPendingList.map((g) => (
                   <TouchableOpacity
                     key={g.id}
                     style={styles.walletPendingItem}
-                    onPress={() =>
+                    onPress={() => {
+                      setWalletAvailableExpanded(false);
                       navigation.navigate('Payout', {
                         goalListId: g.id,
                         goalListName: g.name || 'Challenge',
                         totalAmount: String(g.total_pot || 0),
-                      })
-                    }
+                      });
+                    }}
                   >
                     <Text style={styles.walletPendingName} numberOfLines={1}>{g.name || 'Challenge'}</Text>
-                    <Text style={styles.walletPendingValue}>${parseFloat(g.prize_pool_amount || 0).toFixed(2)}</Text>
+                    <Text style={styles.walletPendingValue}>${(g._shareAmount != null ? g._shareAmount : parseFloat(g.prize_pool_amount || 0)).toFixed(2)}</Text>
+                    <Ionicons name="chevron-forward" size={18} color="#4CAF50" />
                   </TouchableOpacity>
                 ))}
               </View>
+            )}
+            {walletAvailableExpanded && walletPendingList.length === 0 && walletPendingTotal === 0 && (
+              <Text style={styles.walletPendingEmpty}>No winnings to claim yet</Text>
             )}
             <View style={styles.walletRow}>
               <Text style={styles.walletRowLabel}>Total received</Text>
@@ -872,7 +849,7 @@ export default function ProfileScreen({ navigation }) {
             onPress={() => navigation.navigate('Settings')}
           >
             <Ionicons name="settings-outline" size={22} color="#ffffff" />
-            <Text style={styles.profileActionText}>Preferences</Text>
+            <Text style={styles.profileActionText}>Settings</Text>
             <Ionicons name="chevron-forward" size={20} color="#888888" />
           </TouchableOpacity>
           <TouchableOpacity
@@ -880,7 +857,7 @@ export default function ProfileScreen({ navigation }) {
             onPress={() => {
               Alert.alert('Log out', 'Are you sure you want to log out?', [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Log out', style: 'destructive', onPress: () => supabase.auth.signOut() },
+                { text: 'Log out', style: 'destructive', onPress: async () => { await savePushTokenToProfile(null); await supabase.auth.signOut(); } },
               ]);
             }}
           >
@@ -942,15 +919,67 @@ export default function ProfileScreen({ navigation }) {
           </View>
         )}
 
-        {/* Goal Lists Section */}
+        {/* Goal Lists Section - collapsible */}
         {goalCategories.length > 0 && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Goal Lists</Text>
+          <TouchableOpacity
+            style={styles.sectionHeaderRow}
+            onPress={() => setGoalListsSectionExpanded((v) => !v)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.sectionTitle, styles.sectionTitleInHeader]}>Goal Lists</Text>
+            <Ionicons
+              name={goalListsSectionExpanded ? 'chevron-up' : 'chevron-down'}
+              size={22}
+              color="#888"
+            />
+          </TouchableOpacity>
+          {goalListsSectionExpanded && (
           <View style={styles.goalsList}>
             {goalCategories.map((category) => (
-              <View key={category.id} style={styles.goalCard}>
+              <TouchableOpacity
+                key={category.id}
+                style={styles.goalCard}
+                activeOpacity={category.hasStarted && category.isGroupGoal && !category.isEnded ? 0.7 : 1}
+                disabled={!(category.hasStarted && category.isGroupGoal) || !!category.isEnded}
+                onPress={category.hasStarted && category.isGroupGoal && !category.isEnded ? () => navigation.navigate('GoalListSettings', { goalListId: category.id, goalListName: category.name }) : undefined}
+              >
+                {/* Overlay for ended challenge — who won, amount or dare */}
+                {category.isEnded && (() => {
+                  const participants = (goalListParticipants && goalListParticipants[category.id]) || [];
+                  const list = category.goalList || {};
+                  const getProfileName = (userId) => participants.find(p => p.user_id === userId)?.profile?.name || 'Someone';
+                  const winnerIds = list.winner_id ? [list.winner_id] : (Array.isArray(list.tie_winner_ids) ? list.tie_winner_ids : []);
+                  const participantIds = [...new Set([list.user_id, ...participants.map(p => p.user_id)])];
+                  const loserIds = participantIds.filter(id => !winnerIds.includes(id));
+                  const wNames = winnerIds.map(id => getProfileName(id));
+                  const lNames = loserIds.map(id => getProfileName(id));
+                  const fullPrize = parseFloat(list.prize_pool_amount) || (parseFloat(list.total_pot) || 0) * 0.9;
+                  const amount = list.consequence_type === 'money' && winnerIds.length > 0 ? Math.round((fullPrize / winnerIds.length) * 100) / 100 : null;
+                  const consequenceType = list.consequence_type || 'money';
+                  const dare = list.consequence || null;
+                  return (
+                    <View style={styles.goalOverlay}>
+                      <View style={styles.goalOverlayContent}>
+                        <Text style={styles.goalOverlayText}>Challenge ended</Text>
+                        {consequenceType === 'money' ? (
+                          <>
+                            <Text style={styles.goalOverlaySubtext}>Winner{wNames.length > 1 ? 's' : ''}: {wNames.join(', ')}</Text>
+                            {amount != null && <Text style={[styles.goalOverlaySubtext, { color: '#4CAF50', marginTop: 4 }]}>Won ${amount.toFixed(2)}</Text>}
+                          </>
+                        ) : (
+                          <>
+                            <Text style={styles.goalOverlaySubtext}>Winner: {wNames[0] || '—'}</Text>
+                            {lNames.length > 0 && <Text style={styles.goalOverlaySubtext}>Loser{lNames.length > 1 ? 's' : ''}: {lNames.join(', ')}</Text>}
+                            {dare && <Text style={[styles.goalOverlaySubtext, { marginTop: 8, fontStyle: 'italic' }]}>{dare}</Text>}
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })()}
                 {/* Overlay for group goal lists that haven't started */}
-                {category.isGroupGoal && !category.hasStarted && (() => {
+                {!category.isEnded && category.isGroupGoal && !category.hasStarted && (() => {
                   const participants = (goalListParticipants && goalListParticipants[category.id]) || [];
                   const isOwner = category.goalList && category.goalList.user_id === currentUser?.id;
                   const hasMultipleParticipants = participants.length > 1;
@@ -970,10 +999,39 @@ export default function ProfileScreen({ navigation }) {
                     reasonText = 'Waiting to start';
                   }
                   
+                  const webBase = getInviteWebBaseUrl();
+                  const inviteUrl = webBase
+                    ? `${webBase}/join/${category.id}`
+                    : `bttrtogether://join/${category.id}`;
+                  const handleShare = async () => {
+                    try {
+                      if (webBase) {
+                        await Share.share({ message: inviteUrl, title: 'Join my challenge' });
+                      } else {
+                        const message = `Join my challenge "${category.name}" on Bttr Together: ${inviteUrl}`;
+                        const asset = Asset.fromModule(require('../assets/fsf.png'));
+                        await asset.downloadAsync();
+                        await Share.share({
+                          message,
+                          ...(asset.localUri && { url: asset.localUri }),
+                          title: 'Join my challenge',
+                        });
+                      }
+                    } catch (e) {
+                      if (e.message && !e.message.includes('cancel')) Alert.alert('Error', 'Could not share.');
+                    }
+                  };
+
                   return (
                     <View style={styles.goalOverlay}>
                       <View style={styles.goalOverlayContent}>
                         <Text style={styles.goalOverlayText}>{reasonText}</Text>
+                        
+                        {/* Share invite link */}
+                        <TouchableOpacity style={styles.goalOverlayShareButton} onPress={handleShare}>
+                          <Ionicons name="share-outline" size={20} color="#ffffff" />
+                          <Text style={styles.goalOverlayShareButtonText}>Share invite link</Text>
+                        </TouchableOpacity>
                         
                         {/* Start Button - Only show if owner, multiple participants, and all paid/accepted */}
                         {(() => {
@@ -981,15 +1039,14 @@ export default function ProfileScreen({ navigation }) {
                             <TouchableOpacity 
                               style={styles.goalOverlayStartButton}
                               onPress={async () => {
-                                // Mark goal list as started (update all_paid flag)
+                                const now = new Date().toISOString();
                                 const { error } = await supabase
                                   .from('goal_lists')
-                                  .update({ all_paid: true })
+                                  .update({ started_at: now, all_paid: true })
                                   .eq('id', category.id)
                                   .eq('user_id', currentUser.id);
                                 
                                 if (!error) {
-                                  // Reload data to update status
                                   loadProfileData();
                                 }
                               }}
@@ -998,13 +1055,16 @@ export default function ProfileScreen({ navigation }) {
                             </TouchableOpacity>
                           ) : null;
                         })()}
-                  </View>
+                    </View>
                     </View>
                   );
                 })()}
                 
                 <View style={styles.goalPillWrapper}>
                   <Text style={styles.goalTitleText}>{category.name}</Text>
+                  {category.hasStarted && category.isGroupGoal && (
+                    <Text style={styles.goalListSettingsHint}>Tap to view settings</Text>
+                  )}
                 </View>
                     
                 {/* Completion History Grid - Carousel with 3 rows */}
@@ -1066,17 +1126,29 @@ export default function ProfileScreen({ navigation }) {
                     </ScrollView>
                   );
                 })()}
-                      </View>
+              </TouchableOpacity>
             ))}
           </View>
+          )}
         </View>
         )}
 
-        {/* My Goals Section */}
+        {/* My Goals Section - collapsible */}
         {myGoals.length > 0 && (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>My Goals</Text>
-          
+          <TouchableOpacity
+            style={styles.sectionHeaderRow}
+            onPress={() => setMyGoalsSectionExpanded((v) => !v)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.sectionTitle, styles.sectionTitleInHeader]}>My Goals</Text>
+            <Ionicons
+              name={myGoalsSectionExpanded ? 'chevron-up' : 'chevron-down'}
+              size={22}
+              color="#888"
+            />
+          </TouchableOpacity>
+          {myGoalsSectionExpanded && (
           <View style={styles.goalsList}>
             {myGoals.map((goal) => (
               <View key={goal.id} style={styles.goalCard}>
@@ -1115,9 +1187,10 @@ export default function ProfileScreen({ navigation }) {
                                   style={styles.goalOverlayStartButton}
                                   onPress={async () => {
                                     // Mark goal list as started (update all_paid flag)
+                                    const now = new Date().toISOString();
                                     const { error } = await supabase
                                       .from('goal_lists')
-                                      .update({ all_paid: true })
+                                      .update({ started_at: now, all_paid: true })
                                       .eq('id', goal.goal_list_id)
                                       .eq('user_id', currentUser.id);
                                     
@@ -1204,6 +1277,7 @@ export default function ProfileScreen({ navigation }) {
               </View>
             ))}
           </View>
+          )}
         </View>
         )}
 
@@ -1566,6 +1640,25 @@ const styles = StyleSheet.create({
   walletRowValueLoss: {
     color: '#f44336',
   },
+  walletRowValueWithChevron: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  walletChevron: {
+    marginLeft: 6,
+  },
+  walletPendingHint: {
+    fontSize: 12,
+    color: '#888',
+    marginBottom: 8,
+    paddingLeft: 0,
+  },
+  walletPendingEmpty: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 4,
+    marginBottom: 4,
+  },
   walletPendingList: {
     marginTop: 4,
     marginBottom: 4,
@@ -1672,9 +1765,62 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 16,
   },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    marginBottom: 4,
+  },
+  sectionTitleInHeader: {
+    marginBottom: 0,
+  },
   goalsList: {
     gap: 12,
     paddingHorizontal: 16,
+  },
+  endedChallengesList: {
+    gap: 12,
+    paddingHorizontal: 16,
+  },
+  endedChallengeCard: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  endedChallengeName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  endedChallengeLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#888888',
+    marginTop: 6,
+    marginBottom: 2,
+    textTransform: 'uppercase',
+  },
+  endedChallengeValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  endedChallengeAmount: {
+    color: '#4CAF50',
+    fontSize: 18,
+  },
+  endedChallengeDare: {
+    fontSize: 14,
+    color: '#e0e0e0',
+    marginTop: 4,
+    fontStyle: 'italic',
   },
   goalCard: {
     paddingHorizontal: 0,
@@ -1757,6 +1903,22 @@ const styles = StyleSheet.create({
   goalOverlayParticipantStatusPaid: {
     color: '#4CAF50',
   },
+  goalOverlayShareButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#444444',
+  },
+  goalOverlayShareButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
   goalOverlayStartButton: {
     marginTop: 20,
     backgroundColor: '#4CAF50',
@@ -1786,6 +1948,11 @@ const styles = StyleSheet.create({
     flex: 1,
     letterSpacing: 1.5,
     textTransform: 'uppercase',
+  },
+  goalListSettingsHint: {
+    fontSize: 11,
+    color: '#666666',
+    marginLeft: 8,
   },
   statusContainer: {
     paddingVertical: 6,

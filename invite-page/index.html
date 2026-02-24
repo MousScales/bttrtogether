@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" prefix="og: https://ogp.me/ns#">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join on Bttr Together</title>
+  <!-- Open Graph: makes the link show as a rich preview (image + title) in iMessage, etc. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Join on Bttr Together" />
+  <meta property="og:description" content="You're invited to join a challenge. Open in the app to join." />
+  <!-- og:image: absolute URL so iMessage shows rich preview -->
+  <meta property="og:image" content="https://bttrsite.vercel.app/fsf.png" id="og-image" />
+  <meta property="og:url" content="" id="og-url" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Join on Bttr Together" />
+  <meta name="twitter:description" content="You're invited to join a challenge." />
+  <meta name="twitter:image" content="https://bttrsite.vercel.app/fsf.png" id="twitter-image" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    img { width: 80px; height: 80px; margin-bottom: 24px; }
+    h1 { font-size: 22px; font-weight: 500; margin: 0 0 8px; }
+    p { font-size: 15px; color: #888; margin: 0 0 32px; }
+    a {
+      display: inline-block;
+      padding: 14px 32px;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      text-decoration: none;
+      text-shadow: 0 0 12px rgba(255,255,255,0.8);
+    }
+    a:active { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <img src="/fsf.png" alt="Bttr Together" />
+  <h1>Join on Bttr Together</h1>
+  <p>You're invited to join a challenge. Tap below to open in the app.</p>
+  <a href="#" id="open-app">Open in app</a>
+
+  <script>
+    (function() {
+      var origin = window.location.origin;
+      var absImage = origin + '/fsf.png';
+      var ogImage = document.getElementById('og-image');
+      var twitterImage = document.getElementById('twitter-image');
+      if (ogImage) ogImage.content = absImage;
+      if (twitterImage) twitterImage.content = absImage;
+      var ogUrl = document.getElementById('og-url');
+      if (ogUrl) ogUrl.content = window.location.href;
+
+      var path = window.location.pathname;
+      var id = path.replace(/^\/join\/?/, '').replace(/\/$/, '') || '';
+      var link = document.getElementById('open-app');
+      if (id) {
+        link.href = 'bttrtogether://join/' + id;
+        link.onclick = function(e) {
+          e.preventDefault();
+          window.location.href = 'bttrtogether://join/' + id;
+        };
+      } else {
+        link.textContent = 'Invalid invite';
+        link.style.pointerEvents = 'none';
+      }
+    })();
+  </script>
+</body>
+</html>

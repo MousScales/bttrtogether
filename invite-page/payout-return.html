@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Return to Bttr Together</title>
+  <meta http-equiv="refresh" content="2;url=bttrtogether://payout" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    p { font-size: 16px; color: #888; margin: 0 0 16px; }
+    a {
+      font-size: 16px;
+      font-weight: 600;
+      color: #4CAF50;
+      text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <p>Bank setup complete. Opening Bttr Together…</p>
+  <p><a href="bttrtogether://payout">Tap here if the app doesn’t open</a></p>
+  <script>
+    window.location.href = 'bttrtogether://payout';
+  </script>
+</body>
+</html>

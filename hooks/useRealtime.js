@@ -35,12 +35,17 @@ export function useRealtime(tableNames, refetch, channelName) {
       );
     });
 
+    let errorWarned = false;
     channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        // optional: log in dev
-      }
-      if (status === 'CHANNEL_ERROR') {
-        console.warn('[useRealtime] Channel error for tables:', tableNames);
+      if (status === 'CHANNEL_ERROR' && !errorWarned) {
+        errorWarned = true;
+        if (__DEV__) {
+          console.warn(
+            '[useRealtime] Realtime subscription failed for tables:',
+            tableNames,
+            '— Enable Realtime in Supabase: Database → Replication → add these tables.'
+          );
+        }
       }
     });
 
