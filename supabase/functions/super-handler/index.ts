@@ -1,12 +1,26 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import Stripe from "https://esm.sh/stripe@14.21.0?target=deno"
 
-const stripe = new Stripe((Deno.env.get("STRIPE_SECRET_KEY") || "").trim(), {
+const secretKey = (Deno.env.get("STRIPE_SECRET_KEY") || "").trim()
+if (!secretKey || !secretKey.startsWith("sk_")) {
+  console.error("STRIPE_SECRET_KEY is missing or invalid in Supabase Edge Function secrets. Set it in Dashboard → Project Settings → Edge Functions → Secrets. Use the secret key from the SAME Stripe account as your app's EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY.")
+}
+
+const stripe = new Stripe(secretKey || "sk_missing", {
   apiVersion: "2023-10-16",
   httpClient: Stripe.createFetchHttpClient(),
 })
 
 serve(async (req) => {
+  if (!secretKey || !secretKey.startsWith("sk_")) {
+    return new Response(
+      JSON.stringify({
+        error: "Stripe is not configured. Set STRIPE_SECRET_KEY in Supabase Dashboard → Project Settings → Edge Functions → Secrets (use the secret key from the same Stripe account as your app's publishable key). See STRIPE_KEYS_FIX.md.",
+      }),
+      { status: 503, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } },
+    )
+  }
+
   // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", {
@@ -57,12 +71,12 @@ serve(async (req) => {
     const platformFeeAmount = Math.round(amount * PLATFORM_FEE_PERCENT * 100) / 100; // dollars
     const prizePoolAmount    = Math.round((amount - platformFeeAmount) * 100) / 100;  // dollars
 
-    // Use your Stripe Payment Method Configuration so PI matches your account (enable Apple Pay + Cash App in that config in Dashboard)
+    // Use automatic_payment_methods so Card, Apple Pay, and Cash App work.
+    // Ensure STRIPE_SECRET_KEY (here) and EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY (app) are from the SAME Stripe account and mode (test vs live).
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents
       currency: "usd",
       automatic_payment_methods: { enabled: true },
-      payment_method_configuration: "pmc_1SzSidRq8lC2NVHIjdP5g3Hb",
       metadata: {
         goal_list_id,
         user_id,

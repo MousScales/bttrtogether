@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -17,12 +17,13 @@ import { getSupabaseFunctionsUrl, getSupabaseAnonKey } from '../lib/config';
 
 export default function GroupGoalPaymentScreen({ navigation, route }) {
   const { goalListId, amount, goalListName } = route.params;
-  const { confirmPayment } = useStripe();
+  const { confirmPayment, confirmPlatformPayPayment } = useStripe();
   const [loading, setLoading] = useState(false);
   const [clientSecret, setClientSecret] = useState(null);
   const [paymentIntentId, setPaymentIntentId] = useState(null);
   const [selectedMethod, setSelectedMethod] = useState(null); // 'card', 'apple', 'cashapp'
   const [cardComplete, setCardComplete] = useState(false);
+  const applePayInProgress = useRef(false);
 
   useEffect(() => {
     createPaymentIntent();
@@ -154,6 +155,14 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     ]);
   };
 
+  const showPaymentError = (title, message) => {
+    const isKeyMismatch = /no such payment_intent|No such payment_intent/i.test(message || '');
+    const hint = isKeyMismatch
+      ? '\n\nYour app and Supabase must use the SAME Stripe account. In Supabase Dashboard → Project Settings → Edge Functions → Secrets, set STRIPE_SECRET_KEY to the secret key (sk_test_... or sk_live_...) from the same Stripe account as EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY in your .env. Then run: supabase functions deploy super-handler\n\nSee STRIPE_KEYS_FIX.md in the project.'
+      : '';
+    Alert.alert(title, (message || 'Unknown error') + hint);
+  };
+
   const handleCardPayment = async () => {
     if (!cardComplete) {
       Alert.alert('Error', 'Please enter a valid card');
@@ -173,7 +182,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
 
       if (error) {
         if (error.code !== 'Canceled') {
-          Alert.alert('Payment Failed', error.message);
+          showPaymentError('Payment Failed', error.message);
         }
         setLoading(false);
         return;
@@ -181,10 +190,12 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
 
       if (paymentIntent?.status === 'Succeeded') {
         await processPaymentSuccess();
+      } else {
+        showPaymentError('Payment', paymentIntent?.status ? `Unexpected status: ${paymentIntent.status}` : 'Payment did not complete.');
       }
     } catch (error) {
       console.error('Error processing card payment:', error);
-      Alert.alert('Error', error.message || 'Failed to process payment');
+      showPaymentError('Error', error?.message || 'Failed to process payment');
     } finally {
       setLoading(false);
     }
@@ -195,31 +206,64 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
       Alert.alert('Error', 'Payment not ready');
       return;
     }
-
+    if (typeof confirmPlatformPayPayment !== 'function') {
+      Alert.alert('Not Supported', 'Apple Pay is not available in this build. Use a card or Cash App.');
+      return;
+    }
+    if (applePayInProgress.current) {
+      return;
+    }
+    applePayInProgress.current = true;
     setSelectedMethod('apple');
     setLoading(true);
+    console.log('[Apple Pay] Tapped, opening sheet...');
     try {
-      // Confirm payment with Apple Pay - this will show the Apple Pay sheet
-      const { error, paymentIntent } = await confirmPayment(clientSecret, {
-        paymentMethodType: 'ApplePay',
+      // Match backend rounding: dollars for display, same as super-handler (amount * 100 → cents)
+      const amountDollars = Math.round(parseFloat(amount) * 100) / 100;
+      const amountStr = amountDollars.toFixed(2);
+      const result = await confirmPlatformPayPayment(clientSecret, {
+        applePay: {
+          merchantCountryCode: 'US',
+          currencyCode: 'USD',
+          merchantCapabilities: ['supports3DS'],
+          shippingMethods: [],
+          cartItems: [
+            {
+              paymentType: 'Immediate',
+              label: goalListName ? String(goalListName).slice(0, 64) : 'Bttr Together',
+              amount: amountStr,
+            },
+          ],
+        },
       });
+
+      const { error, paymentIntent } = result || {};
+      console.log('[Apple Pay] Result:', error ? { error: error.message } : { status: paymentIntent?.status });
 
       if (error) {
         if (error.code !== 'Canceled') {
-          Alert.alert('Payment Failed', error.message);
+          showPaymentError('Apple Pay Failed', error.message);
+        } else {
+          // User dismissed sheet; if they didn't, they may need to add a card in Wallet or check merchant setup
+          console.log('[Apple Pay] User canceled or sheet dismissed');
         }
         setLoading(false);
+        applePayInProgress.current = false;
         return;
       }
 
       if (paymentIntent?.status === 'Succeeded') {
         await processPaymentSuccess();
+      } else {
+        showPaymentError('Apple Pay', paymentIntent?.status ? `Unexpected status: ${paymentIntent.status}` : 'Payment did not complete.');
       }
     } catch (error) {
-      console.error('Error processing Apple Pay:', error);
-      Alert.alert('Error', error.message || 'Failed to process payment');
+      console.error('[Apple Pay] Error:', error);
+      const msg = error?.message || String(error) || 'Failed to process payment';
+      showPaymentError('Apple Pay Failed', msg);
     } finally {
       setLoading(false);
+      applePayInProgress.current = false;
     }
   };
 
@@ -230,14 +274,16 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
     }
 
     setLoading(true);
+    console.log('[Cash App] Confirming payment...');
     try {
+      // Cash App requires return_url. StripeProvider must have urlScheme="bttrtogether" so native SDK sets bttrtogether://safepay.
       const { error, paymentIntent } = await confirmPayment(clientSecret, {
         paymentMethodType: 'CashApp',
       });
 
       if (error) {
         if (error.code !== 'Canceled') {
-          Alert.alert('Payment Failed', error.message);
+          showPaymentError('Cash App Failed', error.message);
         }
         setLoading(false);
         return;
@@ -245,10 +291,12 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
 
       if (paymentIntent?.status === 'Succeeded') {
         await processPaymentSuccess();
+      } else {
+        showPaymentError('Cash App', paymentIntent?.status ? `Unexpected status: ${paymentIntent.status}` : 'Payment did not complete.');
       }
     } catch (error) {
-      console.error('Error processing Cash App:', error);
-      Alert.alert('Error', error.message || 'Failed to process payment');
+      console.error('[Cash App] Error:', error);
+      showPaymentError('Cash App Failed', error?.message || 'Failed to process payment');
     } finally {
       setLoading(false);
     }
@@ -284,7 +332,7 @@ export default function GroupGoalPaymentScreen({ navigation, route }) {
           <>
             <Text style={styles.sectionTitle}>Choose Payment Method</Text>
 
-            {/* Apple Pay Button - Show on iOS, triggers payment immediately */}
+            {/* Apple Pay - Show on all iOS devices */}
             {Platform.OS === 'ios' && (
               <TouchableOpacity
                 style={styles.paymentMethodButton}

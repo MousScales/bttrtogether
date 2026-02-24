@@ -20,7 +20,16 @@ module.exports = {
       resizeMode: "contain",
       backgroundColor: "#ffffff"
     },
-    plugins: ["expo-notifications"],
+    plugins: [
+      "expo-notifications",
+      [
+        "@stripe/stripe-react-native",
+        {
+          merchantIdentifier: "merchant.com.mousscales.bttrtogether",
+          enableGooglePay: false,
+        },
+      ],
+    ],
     ios: {
       supportsTablet: true,
       bundleIdentifier: "com.mousscales.bttrtogether",
