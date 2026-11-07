@@ -762,13 +762,13 @@ export default function GoalsScreen({ navigation }) {
           if (hasPaid && currentGoalList.consequence_type === 'money') {
             const { data: paymentRecord } = await supabase
               .from('payments')
-              .select('stripe_payment_intent_id')
+              .select('stripe_payment_intent_id, rapyd_payment_id, status')
               .eq('goal_list_id', currentGoalList.id)
               .eq('user_id', user.id)
               .eq('status', 'succeeded')
               .single();
             
-            setOwnerPaidViaStripe(!!paymentRecord?.stripe_payment_intent_id);
+            setOwnerPaidViaStripe(!!(paymentRecord?.stripe_payment_intent_id || paymentRecord?.rapyd_payment_id) || paymentRecord?.status === 'succeeded');
           } else {
             setOwnerPaidViaStripe(false);
           }

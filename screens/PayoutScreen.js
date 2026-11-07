@@ -1,10 +1,8 @@
 /**
- * PayoutScreen — Stripe Connect Express payout flow
+ * PayoutScreen — Rapyd payout flow (bank account)
  *
- * Step 1 (connect): User taps "Set Up Payouts" → Stripe hosts ALL bank/ID onboarding.
- *                   When they return to the app we re-check readiness.
- * Step 2 (claim):   User taps "Claim $X" → backend transfers prize to their account.
- *                   Stripe automatically pays out to their linked bank.
+ * Step 1 (connect): Add bank account via Rapyd (first name, last name, account/routing).
+ * Step 2 (claim):   Tap "Claim $X" → backend sends payout to bank via Rapyd.
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
@@ -17,8 +15,10 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
-  Linking,
+  TextInput,
   AppState,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
@@ -56,22 +56,15 @@ export default function PayoutScreen({ navigation, route }) {
   const [step, setStep]               = useState('loading'); // 'loading' | 'connect' | 'claim' | 'done'
   const [prizeAmount, setPrizeAmount] = useState(0);
   const [platformFee, setPlatformFee] = useState(0);
-
-  // Detect when the user returns to the app after completing Stripe onboarding
-  const appStateRef      = useRef(AppState.currentState);
-  const waitingForStripe = useRef(false);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      const wasBackground = appStateRef.current.match(/inactive|background/);
-      if (wasBackground && nextState === 'active' && waitingForStripe.current) {
-        waitingForStripe.current = false;
-        initialise(); // re-check readiness after Stripe onboarding
-      }
-      appStateRef.current = nextState;
-    });
-    return () => subscription?.remove();
-  }, []);
+  // Rapyd bank form
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [routingNumber, setRoutingNumber] = useState('');
+  const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [postcode, setPostcode] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -115,14 +108,14 @@ export default function PayoutScreen({ navigation, route }) {
         setPrizeAmount(Math.round((total - fee) * 100) / 100);
       }
 
-      // Check if the user's Stripe account is ready for payouts
+      // Check if the user's payout method is ready (Rapyd beneficiary or legacy Stripe)
       const status = await callProcessPayout({
         action:       'check_status',
         user_id:      currentUser.id,
         goal_list_id: goalListId,
       });
 
-      if (status.onboarding_completed && status.payouts_enabled) {
+      if (status?.onboarding_completed && status?.payouts_enabled) {
         setStep('claim');
       } else {
         setStep('connect');
@@ -135,30 +128,33 @@ export default function PayoutScreen({ navigation, route }) {
     }
   };
 
-  // ── Step 1: Open Stripe-hosted onboarding ─────────────────────────────────
-  const handleConnectStripe = async () => {
+  // ── Step 1: Add bank account (Rapyd) or legacy Stripe ─────────────────────
+  const handleAddBankAccount = async () => {
+    const fname = (firstName || '').trim();
+    const lname = (lastName || '').trim();
+    const acct = (accountNumber || '').trim();
+    const routing = (routingNumber || '').trim().replace(/\D/g, '');
+    if (!fname || !lname || !acct || !routing) {
+      Alert.alert('Missing fields', 'Please enter first name, last name, account number, and routing number.');
+      return;
+    }
     setLoading(true);
     try {
-      const data = await callProcessPayout({
-        action:       'create_account',
-        user_id:      user.id,
-        goal_list_id: goalListId,
-        // Stripe will show this URL after onboarding completes;
-        // AppState detection handles the return regardless.
-        return_url: 'https://bttrtogetheraccount.app/payout-return',
+      await callProcessPayout({
+        action:             'create_beneficiary',
+        user_id:            user.id,
+        first_name:         fname,
+        last_name:          lname,
+        account_number:     acct,
+        routing_number:     routing,
+        address:            (address || 'N/A').trim() || 'N/A',
+        city:               (city || 'N/A').trim() || 'N/A',
+        state:              (state || 'N/A').trim() || 'N/A',
+        postcode:           (postcode || '00000').trim() || '00000',
       });
-
-      if (data.already_completed) {
-        setStep('claim');
-        return;
-      }
-
-      if (data.onboarding_url) {
-        waitingForStripe.current = true;
-        await Linking.openURL(data.onboarding_url);
-      }
+      setStep('claim');
     } catch (err) {
-      Alert.alert('Error', err.message || 'Could not start Stripe setup. Try again.');
+      Alert.alert('Error', err.message || 'Could not add bank account. Try again.');
     } finally {
       setLoading(false);
     }
@@ -184,7 +180,7 @@ export default function PayoutScreen({ navigation, route }) {
               setStep('done');
               Alert.alert(
                 '🎉 Payout Initiated!',
-                `$${Number(data.amount ?? prizeAmount).toFixed(2)} is on its way to your bank. Stripe typically pays out within 2 business days.`,
+                `$${Number(data.amount ?? prizeAmount).toFixed(2)} is on its way to your bank. Rapyd typically pays out within 1–3 business days.`,
                 [{ text: 'OK', onPress: () => navigation.goBack() }]
               );
             } catch (err) {
@@ -268,56 +264,92 @@ export default function PayoutScreen({ navigation, route }) {
           </View>
         )}
 
-        {/* ── STEP 1: Connect Stripe ── */}
+        {/* ── STEP 1: Add bank account (Rapyd) ── */}
         {step === 'connect' && (
           <View style={styles.stepCard}>
             <View style={styles.stepBadge}>
               <Text style={styles.stepBadgeText}>Step 1 of 2</Text>
             </View>
-            <Text style={styles.stepTitle}>Set up your payout</Text>
+            <Text style={styles.stepTitle}>Add your bank account</Text>
             <Text style={styles.stepSubtext}>
-              Connect your bank account securely through Stripe. Stripe handles all identity
-              verification — you just follow their quick setup steps.
+              Enter your US bank details. Payouts are powered by Rapyd and sent to your account within 1–3 business days.
             </Text>
 
-            <View style={styles.stripeFeatureList}>
-              <View style={styles.stripeFeatureRow}>
-                <Ionicons name="shield-checkmark" size={18} color="#4CAF50" />
-                <Text style={styles.stripeFeatureText}>Stripe handles ID verification</Text>
+            <Text style={styles.inputLabel}>First name *</Text>
+            <TextInput
+              style={styles.input}
+              value={firstName}
+              onChangeText={setFirstName}
+              placeholder="First name"
+              placeholderTextColor="#666666"
+              autoCapitalize="words"
+            />
+            <Text style={styles.inputLabel}>Last name *</Text>
+            <TextInput
+              style={styles.input}
+              value={lastName}
+              onChangeText={setLastName}
+              placeholder="Last name"
+              placeholderTextColor="#666666"
+              autoCapitalize="words"
+            />
+            <Text style={styles.inputLabel}>Account number *</Text>
+            <TextInput
+              style={styles.input}
+              value={accountNumber}
+              onChangeText={setAccountNumber}
+              placeholder="Bank account number"
+              placeholderTextColor="#666666"
+              keyboardType="number-pad"
+            />
+            <Text style={styles.inputLabel}>Routing number *</Text>
+            <TextInput
+              style={styles.input}
+              value={routingNumber}
+              onChangeText={setRoutingNumber}
+              placeholder="9-digit routing number"
+              placeholderTextColor="#666666"
+              keyboardType="number-pad"
+            />
+            <Text style={styles.inputLabel}>Address (optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={address}
+              onChangeText={setAddress}
+              placeholder="Street address"
+              placeholderTextColor="#666666"
+            />
+            <View style={styles.row2}>
+              <View style={styles.half}>
+                <Text style={styles.inputLabel}>City</Text>
+                <TextInput
+                  style={styles.input}
+                  value={city}
+                  onChangeText={setCity}
+                  placeholder="City"
+                  placeholderTextColor="#666666"
+                />
               </View>
-              <View style={styles.stripeFeatureRow}>
-                <Ionicons name="lock-closed" size={18} color="#4CAF50" />
-                <Text style={styles.stripeFeatureText}>Bank details stored securely by Stripe</Text>
-              </View>
-              <View style={styles.stripeFeatureRow}>
-                <Ionicons name="card" size={18} color="#4CAF50" />
-                <Text style={styles.stripeFeatureText}>Connect any bank account or debit card</Text>
+              <View style={styles.half}>
+                <Text style={styles.inputLabel}>State</Text>
+                <TextInput
+                  style={styles.input}
+                  value={state}
+                  onChangeText={setState}
+                  placeholder="State"
+                  placeholderTextColor="#666666"
+                />
               </View>
             </View>
-
-            <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
-              onPress={handleConnectStripe}
-              disabled={loading}
-            >
-              {loading
-                ? <ActivityIndicator size="small" color="#ffffff" />
-                : <>
-                    <Ionicons name="logo-google" size={20} color="#ffffff" />
-                    <Text style={styles.primaryButtonText}>Set Up Payouts with Stripe</Text>
-                  </>
-              }
-            </TouchableOpacity>
-
-            <Text style={styles.stepNote}>
-              After completing setup in Stripe, return here to claim your winnings.
-            </Text>
-
-            {/* Manual re-check in case AppState detection misses it */}
-            <TouchableOpacity style={styles.recheckButton} onPress={initialise} disabled={loading}>
-              <Ionicons name="refresh" size={16} color="#888888" />
-              <Text style={styles.recheckText}>I finished Stripe setup — check again</Text>
-            </TouchableOpacity>
+            <Text style={styles.inputLabel}>Postal code</Text>
+            <TextInput
+              style={styles.input}
+              value={postcode}
+              onChangeText={setPostcode}
+              placeholder="ZIP / postal code"
+              placeholderTextColor="#666666"
+              keyboardType="number-pad"
+            />
           </View>
         )}
 
@@ -329,14 +361,13 @@ export default function PayoutScreen({ navigation, route }) {
             </View>
             <Text style={styles.stepTitle}>Ready to receive your winnings</Text>
             <Text style={styles.stepSubtext}>
-              Your Stripe account is connected. Tap Claim and we'll transfer the prize to
-              your linked bank account.
+              Your bank account is set up. Tap Claim and we'll send the prize to your account via Rapyd.
             </Text>
 
             <View style={styles.stripeFeatureRow}>
               <Ionicons name="time-outline" size={18} color="#888888" />
               <Text style={[styles.stripeFeatureText, { color: '#888888' }]}>
-                Stripe pays out within 2 business days after transfer.
+                Rapyd typically pays out within 1–3 business days.
               </Text>
             </View>
           </View>
@@ -350,14 +381,14 @@ export default function PayoutScreen({ navigation, route }) {
           {step === 'connect' ? (
             <TouchableOpacity
               style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
-              onPress={handleConnectStripe}
+              onPress={handleAddBankAccount}
               disabled={loading}
             >
               {loading
                 ? <ActivityIndicator size="small" color="#ffffff" />
                 : <>
                     <Ionicons name="card-outline" size={20} color="#ffffff" />
-                    <Text style={styles.primaryButtonText}>Set Up Payouts with Stripe</Text>
+                    <Text style={styles.primaryButtonText}>Add bank account</Text>
                   </>
               }
             </TouchableOpacity>
@@ -448,6 +479,20 @@ const styles = StyleSheet.create({
   stripeFeatureList: { gap: 10 },
   stripeFeatureRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   stripeFeatureText: { fontSize: 14, color: '#cccccc', flex: 1 },
+
+  inputLabel: { fontSize: 12, color: '#888888', marginBottom: 4, marginTop: 8 },
+  input: {
+    backgroundColor: '#0d0d0d',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#ffffff',
+  },
+  row2: { flexDirection: 'row', gap: 12 },
+  half: { flex: 1 },
 
   recheckButton: {
     flexDirection: 'row',

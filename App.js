@@ -5,9 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState, useRef } from 'react';
-import { StripeProvider, useStripe } from '@stripe/stripe-react-native';
 import { supabase } from './lib/supabase';
-import { STRIPE_PUBLISHABLE_KEY } from './lib/stripe';
 
 import GoalsScreen from './screens/GoalsScreen';
 import ProfileScreen from './screens/ProfileScreen';
@@ -265,26 +263,6 @@ function MainTabs() {
 const JOIN_LINK_PREFIX = 'bttrtogether://join/';
 const ADD_ME_LINK_PREFIX = 'bttrtogether://add-me/';
 const PAYOUT_RETURN_PREFIX = 'bttrtogether://payout';
-// Stripe native SDK uses urlScheme + "://safepay" as return URL for Cash App etc.
-const STRIPE_RETURN_PREFIXES = ['bttrtogether://stripe-redirect', 'bttrtogether://safepay'];
-
-/** Handles return URL from Cash App (and other redirect payment methods). Must be inside StripeProvider. */
-function StripeRedirectHandler() {
-  const { handleURLCallback } = useStripe();
-  useEffect(() => {
-    const handleUrl = async (url) => {
-      if (!url || typeof url !== 'string') return;
-      const isStripeReturn = STRIPE_RETURN_PREFIXES.some((prefix) => url.startsWith(prefix));
-      if (isStripeReturn) {
-        await handleURLCallback(url);
-      }
-    };
-    Linking.getInitialURL().then((u) => u && handleUrl(u));
-    const sub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
-    return () => sub.remove();
-  }, [handleURLCallback]);
-  return null;
-}
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -427,13 +405,7 @@ export default function App() {
   }
 
   return (
-    <StripeProvider
-      publishableKey={STRIPE_PUBLISHABLE_KEY}
-      merchantIdentifier="merchant.com.mousscales.bttrtogether"
-      urlScheme="bttrtogether"
-    >
-      <StripeRedirectHandler />
-      <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef}>
         <StatusBar style="light" />
         <RootStack.Navigator screenOptions={{ headerShown: false }}>
           {!session ? (
@@ -471,6 +443,5 @@ export default function App() {
           )}
         </RootStack.Navigator>
     </NavigationContainer>
-    </StripeProvider>
   );
 }
